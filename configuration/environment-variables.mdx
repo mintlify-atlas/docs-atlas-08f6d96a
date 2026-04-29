@@ -1,0 +1,78 @@
+---
+title: "Configure environment variables for AI Balancer API"
+description: "A complete reference for every environment variable AI Balancer reads at startup — provider keys, global settings, and Circuit Breaker tuning parameters."
+---
+
+AI Balancer is configured entirely through environment variables. There are no config files to edit at runtime — set your variables before starting the server and they are read once at startup. Every provider, global setting, and Circuit Breaker threshold has a corresponding variable documented below.
+
+## Starting point
+
+Copy `.env.example` to `.env` in the project root, then fill in your provider API keys:
+
+```bash
+cp .env.example .env
+```
+
+<Warning>
+Never commit your `.env` file to version control. It contains live API keys for Grok, Cerebras, Gemini, and OpenRouter. Add `.env` to your `.gitignore` before your first commit.
+</Warning>
+
+## Provider API keys
+
+Each provider requires its own API key. You only need to set keys for the providers you intend to use — providers with missing or invalid keys are skipped at startup.
+
+| Variable | Description | Default | Required |
+|---|---|---|---|
+| `GROK_API_KEY` | API key for xAI's Grok. Obtain from [x.ai](https://x.ai). | — | Yes (for Grok) |
+| `GROK_MODEL_ID` | Grok model to use for all requests routed to this provider. | `grok-2` | No |
+| `GROK_BASE_URL` | Base URL for the Grok API. Override only if proxying through a custom endpoint. | `https://api.x.ai/v1` | No |
+| `CEREBRAS_API_KEY` | API key for Cerebras Cloud. Obtain from [cloud.cerebras.ai](https://cloud.cerebras.ai). | — | Yes (for Cerebras) |
+| `CEREBRAS_MODEL_ID` | Cerebras model to use for all requests routed to this provider. | `gemma-2-9b-it` | No |
+| `CEREBRAS_BASE_URL` | Base URL for the Cerebras API. Override only if proxying through a custom endpoint. | `https://api.cerebras.ai/v1` | No |
+| `GEMINI_API_KEY` | API key for Google AI Studio. Obtain from [aistudio.google.com](https://aistudio.google.com/app/apikey). | — | Yes (for Gemini) |
+| `GEMINI_MODEL_ID` | Gemini model to use for all requests routed to this provider. | `gemini-2.0-flash` | No |
+| `GEMINI_BASE_URL` | Base URL for the Gemini API. Override only if using a specific API version. | `https://generativelanguage.googleapis.com/v1beta` | No |
+| `OPENROUTER_API_KEY` | API key for OpenRouter. Obtain from [openrouter.ai/settings](https://openrouter.ai/settings). | — | Yes (for OpenRouter) |
+| `OPENROUTER_MODEL_ID` | OpenRouter model string to use for all requests routed to this provider. | `openai/gpt-3.5-turbo` | No |
+| `OPENROUTER_BASE_URL` | Base URL for the OpenRouter API. Override only if using a custom proxy. | `https://openrouter.ai/api/v1` | No |
+| `OPENROUTER_REFERER` | HTTP Referer header sent to OpenRouter. Used for app identification on the OpenRouter dashboard. | `http://localhost:8000` | No |
+| `OPENROUTER_APP_NAME` | App name header sent to OpenRouter. Shown in usage dashboards. | `AI-Balancer` | No |
+
+## Global configuration
+
+These variables control server behavior, authentication, and security settings that apply across all providers.
+
+| Variable | Description | Default | Required |
+|---|---|---|---|
+| `ENABLED_PROVIDERS` | Comma-separated list of provider names to enable. When empty, all providers with valid keys are registered. | `` (all) | No |
+| `ADMIN_API_KEY` | Pre-set an admin API key instead of auto-generating one on first startup. | — | No |
+| `PRODUCTION_MODE` | Set to `true` to enable HTTP→HTTPS redirect for all non-localhost requests. | `false` | No |
+| `CORS_ALLOWED_ORIGINS` | Comma-separated list of allowed CORS origins. | `localhost` | No |
+| `LOG_LEVEL` | Log verbosity. Accepted values: `DEBUG`, `INFO`, `WARNING`, `ERROR`. | `INFO` | No |
+| `HOST` | Network interface the server binds to. | `0.0.0.0` | No |
+| `PORT` | Port the server listens on. | `8000` | No |
+
+<Tip>
+Use `ENABLED_PROVIDERS` to run a subset of providers without removing their keys from `.env`. For example, to use only Grok and Cerebras during development:
+
+```bash
+ENABLED_PROVIDERS=grok,cerebras
+```
+
+Leave it empty (or omit it) to register every provider whose API key validates successfully at startup.
+</Tip>
+
+## Circuit Breaker tuning
+
+The adaptive Circuit Breaker uses these variables to determine when to open, degrade, and recover. The defaults are conservative and suit most production workloads; adjust them if your providers have unusual latency profiles or failure rates.
+
+| Variable | Description | Default | Required |
+|---|---|---|---|
+| `CB_FAILURE_THRESHOLD` | Number of consecutive failures before the circuit opens and the provider is bypassed. | `3` | No |
+| `CB_FAILURE_TIMEOUT` | Seconds the circuit stays open before moving to half-open and retrying. | `30.0` | No |
+| `CB_LATENCY_THRESHOLD_MS` | Latency in milliseconds above which a request is considered slow. Triggers the DEGRADED state after enough slow calls. | `5000.0` | No |
+| `CB_LATENCY_THRESHOLD_COUNT` | Number of consecutive high-latency requests required to move from CLOSED to DEGRADED. | `3` | No |
+| `CB_ERROR_RATE_THRESHOLD` | Error rate (0–1) at which the circuit opens. A value of `0.5` means open when 50% of recent requests fail. | `0.5` | No |
+| `CB_HALF_OPEN_MAX_CALLS` | Maximum number of test calls allowed when the circuit is half-open before deciding to close or re-open. | `3` | No |
+| `CB_SLIDING_WINDOW_SIZE` | Number of recent requests used to calculate the rolling error rate. | `10` | No |
+| `CB_DEGRADED_RECOVERY_TIME` | Seconds without high-latency requests required to transition from DEGRADED back to CLOSED. | `30.0` | No |

@@ -1,0 +1,138 @@
+---
+title: "POST /v1/chat/no-stream — non-streaming v1 chat"
+description: "Send a conversation history to the gateway and receive a single complete JSON response containing the full text, provider details, and measured latency."
+---
+
+The `/v1/chat/no-stream` endpoint accepts the same request body as `/v1/chat` but waits for the LLM provider to finish generating before returning a single JSON response. This is useful when streaming is not supported by your client, or when you need to measure exact end-to-end latency. The gateway still performs round-robin provider selection automatically unless you specify a `provider` in the request body.
+
+## Request
+
+**`POST /v1/chat/no-stream`**
+
+| Header | Required | Value |
+|---|---|---|
+| `X-API-Key` | Yes | Your API key |
+| `Content-Type` | Yes | `application/json` |
+
+**Rate limit:** 100 requests per minute per API key.
+
+### Request body
+
+<ParamField body="messages" type="object[]" required>
+  Ordered list of conversation messages. Minimum 1, maximum 50 messages. Each item must include `role` and `content`.
+
+  <Expandable title="messages item properties">
+    <ParamField body="messages[].role" type="string" required>
+      The role of the message author. Accepted values: `"user"`, `"assistant"`, or `"system"`.
+    </ParamField>
+
+    <ParamField body="messages[].content" type="string" required>
+      The text content of the message. Must be between 1 and 10,000 characters. Whitespace-only strings are rejected.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="provider" type="string">
+  Pin the request to a specific LLM provider. Accepted values: `grok`, `cerebras`, `gemini`, `openrouter`. When omitted, the gateway uses round-robin load balancing across all healthy providers.
+</ParamField>
+
+## Response
+
+**`200 OK`** — `Content-Type: application/json`
+
+<ResponseField name="content" type="string">
+  The complete generated text from the LLM. This is the full response, not a chunked stream.
+</ResponseField>
+
+<ResponseField name="provider" type="object">
+  Information about the provider that handled the request.
+
+  <Expandable title="provider properties">
+    <ResponseField name="provider.service" type="string">
+      The provider name (e.g., `"grok"`, `"cerebras"`, `"gemini"`, `"openrouter"`).
+    </ResponseField>
+
+    <ResponseField name="provider.model" type="string">
+      The model identifier used (e.g., `"grok-2"`, `"gemini-2.0-flash"`).
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="response_time_ms" type="number">
+  Total time in milliseconds from when the gateway received the request to when the provider finished generating the response.
+</ResponseField>
+
+## Example
+
+<RequestExample>
+
+```bash cURL
+curl -X POST https://your-domain.com/v1/chat/no-stream \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "user", "content": "What is Python?"}
+    ]
+  }'
+```
+
+</RequestExample>
+
+<ResponseExample>
+
+```json 200
+{
+  "content": "Python is a high-level, interpreted programming language known for its clear syntax and readability. It supports multiple programming paradigms including procedural, object-oriented, and functional programming.",
+  "provider": {
+    "service": "grok",
+    "model": "grok-2"
+  },
+  "response_time_ms": 1234.5
+}
+```
+
+</ResponseExample>
+
+## Error responses
+
+| Status | Description |
+|---|---|
+| `401 Unauthorized` | Missing or invalid `X-API-Key` header. |
+| `422 Unprocessable Entity` | Request body failed validation — for example, `messages` is empty, a `role` value is not one of `user`/`assistant`/`system`, or `content` exceeds 10,000 characters. |
+| `429 Too Many Requests` | Rate limit of 100 requests/minute exceeded for this API key. |
+| `503 Service Unavailable` | All configured LLM providers are unreachable or have open circuit breakers. |
+
+```json 401
+{
+  "detail": "Invalid or missing API key"
+}
+```
+
+```json 422
+{
+  "detail": [
+    {
+      "loc": ["body", "messages"],
+      "msg": "ensure this value has at least 1 items",
+      "type": "value_error.list.min_items"
+    }
+  ]
+}
+```
+
+```json 429
+{
+  "detail": "Rate limit exceeded",
+  "limit": "100/minute",
+  "remaining": 0,
+  "reset": "2026-04-29T10:31:00Z"
+}
+```
+
+```json 503
+{
+  "detail": "No providers available",
+  "reason": "All circuit breakers are open"
+}
+```

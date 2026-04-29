@@ -1,0 +1,189 @@
+---
+title: "Monitoring and Observability for the AI Gateway"
+description: "Explore Prometheus metrics, health check endpoints, structured logging, and circuit breaker status APIs to monitor provider health and gateway performance."
+---
+
+The AI Balancer gateway is instrumented with Prometheus metrics, structured JSON-friendly logs, and dedicated HTTP endpoints for health and circuit breaker state. Together these signals give you a complete picture of gateway behaviour in development and production: which providers are serving traffic, how many requests are failing, whether any circuit breakers have tripped, and what the current error rate looks like across your provider pool.
+
+## Prometheus metrics
+
+The gateway exposes a standard Prometheus text-format metrics endpoint on both API versions.
+
+```
+GET /v1/metrics
+GET /v2/metrics
+```
+
+No authentication header is required to scrape this endpoint. A raw response looks like:
+
+```text
+# HELP api_requests_total Total de requests al API Gateway
+# TYPE api_requests_total counter
+api_requests_total{endpoint="/v1/chat",provider="grok",status="success"} 1234.0
+api_requests_total{endpoint="/v1/chat",provider="cerebras",status="success"} 891.0
+api_requests_total{endpoint="/v1/batch/chat",provider="batch",status="success"} 42.0
+
+# HELP api_request_duration_seconds Duración de requests en segundos
+# TYPE api_request_duration_seconds histogram
+api_request_duration_seconds_bucket{endpoint="/v1/chat",provider="grok",le="0.5"} 987.0
+api_request_duration_seconds_bucket{endpoint="/v1/chat",provider="grok",le="1.0"} 1201.0
+api_request_duration_seconds_sum{endpoint="/v1/chat",provider="grok"} 1567.34
+
+# HELP circuit_breaker_state Estado del Circuit Breaker (0=closed, 1=open, 2=half_open)
+# TYPE circuit_breaker_state gauge
+circuit_breaker_state{provider="grok"} 0.0
+circuit_breaker_state{provider="cerebras"} 0.0
+circuit_breaker_state{provider="gemini"} 1.0
+circuit_breaker_state{provider="openrouter"} 0.0
+```
+
+### Key metric names
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `api_requests_total` | Counter | `endpoint`, `provider`, `status` | Total requests handled by the gateway |
+| `api_request_duration_seconds` | Histogram | `endpoint`, `provider` | Request latency distribution in seconds |
+| `api_active_requests` | Gauge | — | Number of requests currently in flight |
+| `circuit_breaker_state` | Gauge | `provider` | Current circuit breaker state per provider |
+| `api_errors_total` | Counter | `endpoint`, `error_type` | Total application errors by type |
+
+### Circuit breaker state values
+
+The `circuit_breaker_state` gauge uses numeric values that map to the following states:
+
+| Value | State | Meaning |
+|---|---|---|
+| `0` | `closed` | Normal operation — all requests are allowed through |
+| `1` | `open` | Provider is failing — requests are blocked until recovery timeout elapses |
+| `2` | `half_open` | Testing recovery — a limited number of probe requests are allowed |
+| `3` | `degraded` | Provider is responding but with high latency |
+
+### Setting up Prometheus scraping
+
+Add the gateway as a scrape target in your `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: "ai-balancer-gateway"
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["localhost:8000"]
+    metrics_path: /v1/metrics
+```
+
+If your gateway is deployed behind a reverse proxy or on a non-default port, update `targets` accordingly.
+
+## Health check endpoint
+
+Use the health endpoint to check the current availability of every configured provider. This is useful for uptime monitors and load balancer health probes.
+
+```
+GET /v1/health
+GET /v2/health
+```
+
+```bash
+curl http://localhost:8000/v1/health \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
+**Healthy response (200 OK):**
+
+```json
+{
+  "status": "healthy",
+  "providers": {
+    "grok": true,
+    "cerebras": true,
+    "gemini": true,
+    "openrouter": true
+  }
+}
+```
+
+**Degraded response (200 OK — one provider down):**
+
+```json
+{
+  "status": "degraded",
+  "providers": {
+    "grok": true,
+    "cerebras": false,
+    "gemini": true,
+    "openrouter": true
+  }
+}
+```
+
+## Circuit breaker status
+
+For a detailed view of each provider's circuit breaker — including failure counts, time in the current state, and half-open call counts — use the circuit breaker endpoint.
+
+```
+GET /v1/circuit-breaker
+GET /v2/circuit-breaker
+```
+
+```bash
+curl http://localhost:8000/v1/circuit-breaker \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
+```json
+{
+  "circuits": {
+    "grok": {
+      "service": "grok",
+      "state": "closed",
+      "failure_count": 0,
+      "success_count": 410,
+      "last_failure_time": 0,
+      "half_open_calls": 0
+    },
+    "gemini": {
+      "service": "gemini",
+      "state": "open",
+      "failure_count": 3,
+      "success_count": 12,
+      "last_failure_time": 1714290000,
+      "half_open_calls": 0
+    }
+  }
+}
+```
+
+To manually reset a tripped circuit breaker without waiting for the recovery timeout:
+
+```bash
+curl -X POST http://localhost:8000/v1/circuit-breaker/gemini/reset \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
+## Structured logging
+
+The gateway emits structured log lines with a consistent format that is easy to parse with tools like Loki, Fluentd, or CloudWatch Logs.
+
+```text
+[2026-04-29 10:30:00] [INFO] [grok] Request processed
+[2026-04-29 10:30:01] [WARNING] [cerebras] High latency detected: 6213ms
+[2026-04-29 10:30:02] [ERROR] [gemini] Provider returned 500 - recording failure
+```
+
+Log lines include a timestamp, severity level, and the provider name where relevant. The log level is controlled by the `LOG_LEVEL` environment variable.
+
+| `LOG_LEVEL` value | What is logged |
+|---|---|
+| `DEBUG` | All request details, provider selection logic, circuit breaker transitions |
+| `INFO` | Request completions, provider selection, batch summaries (default) |
+| `WARNING` | High latency, partial batch failures, degraded provider state |
+| `ERROR` | Provider errors, circuit breaker trips, unexpected exceptions |
+
+Set the log level in your `.env` file:
+
+```bash
+LOG_LEVEL=DEBUG
+```
+
+<Tip>
+  Set `LOG_LEVEL=DEBUG` when troubleshooting provider connectivity issues. Debug logs include the full provider selection path, circuit breaker state at the time of each request, and detailed error messages from upstream provider APIs — making it much easier to trace exactly why a particular provider was skipped or why a request failed.
+</Tip>

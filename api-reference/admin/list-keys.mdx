@@ -1,0 +1,96 @@
+---
+title: "GET /admin/keys — list all active API keys"
+description: "Retrieve metadata for all active API keys including name, rate limit, admin flag, and creation timestamp. Full key values are never returned for security."
+---
+
+The list keys endpoint returns metadata for every active API key registered with the gateway. It is useful for auditing which clients have access, reviewing rate limit assignments, and confirming that newly created or recently revoked keys reflect the expected state. For security, the response never includes the actual key values — only a hash prefix is stored server-side and only the metadata fields are exposed. To identify a key, use the `name` field that was provided at creation time.
+
+## Endpoint
+
+```
+GET /admin/keys
+```
+
+## Authentication
+
+Requires a valid API key in the `X-API-Key` header. Both regular and admin keys can call this endpoint.
+
+```
+X-API-Key: your_api_key_here
+```
+
+## Request
+
+No request body is required for this endpoint.
+
+## Response fields
+
+<ResponseField name="keys" type="array" required>
+  List of key metadata objects. One entry per active API key registered with the gateway.
+
+  <Expandable title="key metadata object">
+    <ResponseField name="name" type="string" required>
+      The unique client name assigned when the key was created.
+    </ResponseField>
+    <ResponseField name="rate_limit" type="integer" required>
+      The maximum number of requests per minute allowed for this key.
+    </ResponseField>
+    <ResponseField name="is_admin" type="boolean" required>
+      Whether this key carries admin privileges, allowing it to create, list, and revoke any key.
+    </ResponseField>
+    <ResponseField name="active" type="boolean" required>
+      Whether the key is currently active. Revoked keys are removed from this list.
+    </ResponseField>
+    <ResponseField name="created_at" type="string" required>
+      ISO 8601 timestamp of when the key was created (for example `"2026-04-13T10:30:00Z"`).
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## HTTP status codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | Key list returned successfully |
+| `401 Unauthorized` | Missing or invalid API key |
+
+## Example request
+
+```bash
+curl -X GET https://your-domain.com/admin/keys \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
+## Example response
+
+```json
+{
+  "keys": [
+    {
+      "name": "admin",
+      "rate_limit": 1000,
+      "is_admin": true,
+      "active": true,
+      "created_at": "2026-04-13T10:30:00Z"
+    },
+    {
+      "name": "my-client-app",
+      "rate_limit": 100,
+      "is_admin": false,
+      "active": true,
+      "created_at": "2026-04-13T11:00:00Z"
+    },
+    {
+      "name": "data-pipeline",
+      "rate_limit": 500,
+      "is_admin": false,
+      "active": true,
+      "created_at": "2026-04-14T08:15:00Z"
+    }
+  ]
+}
+```
+
+<Note>
+  Full key values are **never** included in list responses. The server stores only a hash of each key. If you need to identify which physical key string corresponds to a given name, the only option is to revoke the current key and issue a new one.
+</Note>

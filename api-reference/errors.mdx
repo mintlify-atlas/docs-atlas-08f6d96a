@@ -1,0 +1,131 @@
+---
+title: "Error codes and response formats for AI Balancer"
+description: "Reference for HTTP status codes, JSON error response structure, rate limit headers, and circuit breaker 503 responses from the AI Balancer API Gateway."
+---
+
+The AI Balancer API Gateway uses standard HTTP status codes to indicate the outcome of every request. All error responses use a consistent JSON body with a `detail` field describing the problem in human-readable terms. Some error types — particularly rate limit and service availability errors — include additional fields and response headers to help clients implement appropriate retry logic.
+
+## HTTP status codes
+
+| Code | Name | Description |
+|------|------|-------------|
+| `200` | OK | Request completed successfully |
+| `201` | Created | Resource created successfully (returned by `POST /admin/keys`) |
+| `400` | Bad Request | The request is malformed or uses an invalid format |
+| `401` | Unauthorized | The `X-API-Key` header is missing, empty, or does not match any active key |
+| `403` | Forbidden | The key is valid but is not authorized to perform the requested action (for example, deleting another user's key without admin privileges) |
+| `404` | Not Found | The requested resource does not exist (for example, an unknown provider name or a key that has already been revoked) |
+| `413` | Request Payload Too Large | The request body exceeds the 1 MB size limit |
+| `422` | Unprocessable Entity | Request body validation failed — a required field is missing or a field value is outside the allowed range |
+| `429` | Too Many Requests | The API key has exceeded its configured rate limit |
+| `500` | Internal Server Error | An unexpected server-side error occurred |
+| `503` | Service Unavailable | No LLM providers are currently available — all circuit breakers are open |
+
+## Standard error response format
+
+All `4xx` and `5xx` responses return a JSON body with a `detail` field:
+
+```json
+{
+  "detail": "Error message describing the issue"
+}
+```
+
+**Example — 401 Unauthorized:**
+
+```json
+{
+  "detail": "Invalid API Key"
+}
+```
+
+**Example — 404 Not Found (provider reset):**
+
+```json
+{
+  "detail": "Provider not found: unknown_provider"
+}
+```
+
+**Example — 413 Payload Too Large:**
+
+```json
+{
+  "detail": "Request too large. Max 1MB allowed."
+}
+```
+
+## Rate limit error (429)
+
+When a key exceeds its rate limit, the response includes additional fields with details about the current limit window, and the `X-RateLimit-*` headers are also present:
+
+```json
+{
+  "detail": "Rate limit exceeded",
+  "limit": "100/minute",
+  "remaining": 0,
+  "reset": "2026-04-29T10:31:00Z"
+}
+```
+
+### Rate limit response headers
+
+The following headers are included on all responses (not just 429) so clients can proactively back off before hitting the limit:
+
+| Header | Type | Description |
+|--------|------|-------------|
+| `X-RateLimit-Limit` | integer | Total requests per minute allowed for this key |
+| `X-RateLimit-Remaining` | integer | Requests remaining in the current one-minute window |
+| `X-RateLimit-Reset` | integer | Unix timestamp at which the rate limit window resets |
+
+**Example headers:**
+
+```
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 0
+X-RateLimit-Reset: 1714001460
+```
+
+## Service unavailable error (503)
+
+A `503` response from a chat endpoint means the gateway could not route the request to any provider because all circuit breakers are currently open. The response body includes a `reason` field alongside the standard `detail`:
+
+```json
+{
+  "detail": "No providers available",
+  "reason": "All circuit breakers are open"
+}
+```
+
+A `503` from the `/v1/health` or `/v2/health` endpoint means at least one provider failed its health check. In this case, the response body is the health payload (not the error format above) — see the [health endpoint reference](/api-reference/system/health) for details.
+
+<Note>
+  When you receive a `503` from a chat endpoint, check `GET /v1/circuit-breaker` to identify which providers are open. If you have resolved the underlying provider issue, you can manually reset a breaker with `POST /v1/circuit-breaker/{provider}/reset` without waiting for the automatic recovery timeout.
+</Note>
+
+## Validation error (422)
+
+FastAPI validation errors include a structured `detail` array rather than a plain string. Each entry identifies the field that failed and the reason:
+
+```json
+{
+  "detail": [
+    {
+      "loc": ["body", "name"],
+      "msg": "field required",
+      "type": "value_error.missing"
+    }
+  ]
+}
+```
+
+## Security-related headers
+
+All responses from the gateway include the following security headers regardless of status code:
+
+| Header | Value | Purpose |
+|--------|-------|---------|
+| `X-Frame-Options` | `DENY` | Prevents the page from being embedded in a frame |
+| `X-Content-Type-Options` | `nosniff` | Prevents MIME-type sniffing |
+| `Content-Security-Policy` | (configured value) | Restricts resource loading sources |
+| `Cache-Control` | `no-store` | Prevents caching of API responses |

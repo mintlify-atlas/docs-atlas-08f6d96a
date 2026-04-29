@@ -1,0 +1,81 @@
+---
+title: "AI Balancer API Gateway: multi-provider LLM routing"
+description: "AI Balancer unifies Grok, Cerebras, Gemini, and OpenRouter with Round Robin load balancing, Circuit Breaker protection, and per-client API key management."
+---
+
+AI Balancer is a FastAPI-based API gateway that routes LLM requests across multiple providers through a single, consistent interface. Instead of building separate integrations for each provider, you point your application at AI Balancer and it handles provider selection, retries, failure isolation, and authentication — so your code stays simple regardless of how many backends are active.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install the gateway, configure your provider keys, and send your first chat request in minutes.
+  </Card>
+  <Card title="Authentication" icon="key" href="/authentication">
+    Learn how admin and client API keys work, how to create them, and how to secure your deployment.
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/concepts/architecture">
+    Understand how requests flow through the gateway from client to provider and back.
+  </Card>
+  <Card title="Circuit Breaker" icon="shield-halved" href="/concepts/circuit-breaker">
+    See how the gateway detects failing providers and routes around them automatically.
+  </Card>
+</CardGroup>
+
+## Key features
+
+| Feature | Description |
+|---|---|
+| **Multi-provider routing** | Routes across Grok, Cerebras, Gemini, and OpenRouter from a single endpoint |
+| **Round Robin load balancing** | Distributes requests evenly across all active and healthy providers |
+| **Circuit Breaker** | Temporarily removes failing providers to prevent cascading errors |
+| **Automatic retry** | Retries transient failures before surfacing an error to the client |
+| **API versioning** | v1 uses OpenAI-style `messages` arrays; v2 adds `system_prompt`, `temperature`, and `max_tokens` |
+| **Streaming responses** | Server-Sent Events streaming on all chat endpoints for real-time output |
+| **Batch processing** | Send multiple prompts in a single request (rate-limited to 5/min) |
+| **Per-client rate limiting** | Configurable requests-per-minute cap on each API key (default 100/min) |
+| **Prometheus metrics** | Built-in `/v1/metrics` endpoint for monitoring request counts and latency |
+| **API key management** | Create, list, and revoke client keys via the `/admin/keys` endpoints |
+| **SHA-256 key hashing** | Keys are stored as hashes — plain-text values are never persisted |
+| **Security headers** | Every response includes `X-Frame-Options`, `X-Content-Type-Options`, and CSP headers |
+| **CORS configuration** | Allowed origins are configurable via the `CORS_ALLOWED_ORIGINS` environment variable |
+| **Request size limit** | Requests exceeding 1 MB are rejected with HTTP 413 |
+| **HTTPS redirect** | Set `PRODUCTION_MODE=true` to redirect HTTP traffic to HTTPS automatically |
+
+## Architecture overview
+
+AI Balancer sits between your application and the LLM providers. Every request passes through authentication middleware, then the Round Robin load balancer selects a provider. Before forwarding, the Circuit Breaker checks whether that provider is currently healthy. The result — success or failure — is recorded so the Circuit Breaker can adapt over time.
+
+```
+┌─────────────┐     ┌─────────────────────┐     ┌─────────────┐
+│   Client    │────▶│     API Gateway     │────▶│    Grok     │
+│             │     │      (FastAPI)      │     └─────────────┘
+│  X-API-Key  │     │                     │     ┌─────────────┐
+│             │     │ ┌─────────────────┐ │────▶│   Cerebras  │
+│             │     │ │   Round Robin   │ │     └─────────────┘
+│             │     │ │  Load Balancer  │ │     ┌─────────────┐
+│             │     │ └─────────────────┘ │────▶│    Gemini   │
+│             │     │ ┌─────────────────┐ │     └─────────────┘
+│             │     │ │ Circuit Breaker │ │     ┌─────────────┐
+│             │     │ └─────────────────┘ │────▶│  OpenRouter │
+└─────────────┘     └─────────────────────┘     └─────────────┘
+```
+
+The four supported providers are:
+
+- **Grok** — xAI's model, configured with `GROK_API_KEY` and `GROK_MODEL_ID` (default: `grok-2`)
+- **Cerebras** — Fast inference API, configured with `CEREBRAS_API_KEY` and `CEREBRAS_MODEL_ID`
+- **Gemini** — Google AI, configured with `GEMINI_API_KEY` and `GEMINI_MODEL_ID`
+- **OpenRouter** — Multi-model aggregator, configured with `OPENROUTER_API_KEY` and `OPENROUTER_MODEL_ID`
+
+You can enable a subset of providers at startup using the `ENABLED_PROVIDERS` environment variable. Providers with invalid API keys are skipped automatically with an error logged at startup.
+
+## Request flow
+
+1. Your client sends a request with an `X-API-Key` header to `/v1/chat` or `/v2/chat`.
+2. The authentication middleware validates the key and attaches client metadata to the request.
+3. The Round Robin load balancer selects the next provider in rotation.
+4. The Circuit Breaker checks whether the selected provider is currently open or closed.
+5. The gateway forwards the request to the provider and streams or buffers the response.
+6. The outcome (success or failure) is recorded, updating the Circuit Breaker state.
+7. The response is returned to your client.
+
+To learn more, see [Architecture](/concepts/architecture) and [Circuit Breaker](/concepts/circuit-breaker).

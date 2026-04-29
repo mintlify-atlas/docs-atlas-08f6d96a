@@ -1,0 +1,129 @@
+---
+title: "GET /v1/metrics — Prometheus metrics endpoint"
+description: "Scrape Prometheus-format metrics: request counters, error counts, circuit breaker state gauges, and request duration histograms for each LLM provider."
+---
+
+The metrics endpoint exposes instrumentation data for every registered LLM provider in Prometheus text format. It is intentionally unauthenticated so that your Prometheus server can scrape it without an API key, following the standard convention for monitoring endpoints. The output includes request totals broken down by provider, endpoint, and status; failed request counts; circuit breaker state gauges; request duration histograms; and a gauge for currently active requests.
+
+## Endpoint
+
+```
+GET /v1/metrics
+GET /v2/metrics
+```
+
+## Authentication
+
+No authentication is required. This endpoint is publicly accessible to allow Prometheus scrapers to reach it without needing to manage API keys in your scrape configuration.
+
+## Response format
+
+The response uses `Content-Type: text/plain; version=0.0.4` in standard Prometheus exposition format. Each metric family begins with a `# HELP` comment describing the metric and a `# TYPE` comment declaring the metric type, followed by one or more labeled sample lines.
+
+## Available metrics
+
+### `api_requests_total`
+
+A counter tracking the total number of requests processed by the gateway, labeled by the endpoint path, the provider that handled the request, and the outcome status.
+
+**Labels:**
+- `endpoint` — the request path (for example `/v1/chat`, `/v2/chat/no-stream`)
+- `provider` — the LLM provider that served the request (`grok`, `cerebras`, `gemini`, `openrouter`)
+- `status` — outcome of the request (`success` or `error`)
+
+### `api_request_duration_seconds`
+
+A histogram tracking request latency in seconds with pre-configured buckets at 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, and 10.0 seconds.
+
+**Labels:**
+- `endpoint` — the request path
+- `provider` — the LLM provider that handled the request
+
+### `api_active_requests`
+
+A gauge tracking the number of requests currently being processed by the gateway. Useful for detecting traffic spikes or worker saturation.
+
+### `circuit_breaker_state`
+
+A gauge reflecting the current state of each provider's circuit breaker as a numeric value. Use this to alert on providers that are open or degraded.
+
+**Labels:**
+- `provider` — the LLM provider name
+
+**State encoding:**
+
+| Value | State | Description |
+|-------|-------|-------------|
+| `0` | `closed` | Normal operation, all requests pass through |
+| `1` | `open` | Provider failing, requests are blocked |
+| `2` | `half_open` | Testing recovery with limited probe requests |
+| `3` | `degraded` | Provider is slow but functional |
+
+### `api_errors_total`
+
+A counter tracking application-level errors broken down by endpoint and error type (for example `timeout`, `validation`, `provider_error`).
+
+**Labels:**
+- `endpoint` — the request path where the error occurred
+- `error_type` — classification of the error
+
+### `api_memory_usage_bytes`
+
+A gauge reporting the approximate memory consumption of the gateway process in bytes.
+
+## Example request
+
+```bash
+curl -X GET https://your-domain.com/v1/metrics
+```
+
+## Example response
+
+```text
+# HELP api_requests_total Total de requests al API Gateway
+# TYPE api_requests_total counter
+api_requests_total{endpoint="/v1/chat",provider="grok",status="success"} 1234.0
+api_requests_total{endpoint="/v1/chat",provider="cerebras",status="success"} 987.0
+api_requests_total{endpoint="/v1/chat",provider="grok",status="error"} 5.0
+
+# HELP api_request_duration_seconds Duración de requests en segundos
+# TYPE api_request_duration_seconds histogram
+api_request_duration_seconds_bucket{endpoint="/v1/chat",provider="grok",le="0.1"} 120.0
+api_request_duration_seconds_bucket{endpoint="/v1/chat",provider="grok",le="0.5"} 890.0
+api_request_duration_seconds_bucket{endpoint="/v1/chat",provider="grok",le="1.0"} 1100.0
+api_request_duration_seconds_bucket{endpoint="/v1/chat",provider="grok",le="+Inf"} 1234.0
+api_request_duration_seconds_sum{endpoint="/v1/chat",provider="grok"} 412.7
+api_request_duration_seconds_count{endpoint="/v1/chat",provider="grok"} 1234.0
+
+# HELP api_active_requests Número de requests activas actualmente
+# TYPE api_active_requests gauge
+api_active_requests 3.0
+
+# HELP circuit_breaker_state Estado del Circuit Breaker (0=closed, 1=open, 2=half_open)
+# TYPE circuit_breaker_state gauge
+circuit_breaker_state{provider="grok"} 0.0
+circuit_breaker_state{provider="cerebras"} 0.0
+circuit_breaker_state{provider="gemini"} 1.0
+circuit_breaker_state{provider="openrouter"} 0.0
+
+# HELP api_errors_total Total de errores en el API Gateway
+# TYPE api_errors_total counter
+api_errors_total{endpoint="/v1/chat",error_type="provider_error"} 5.0
+```
+
+## Configuring Prometheus to scrape this endpoint
+
+Add the following job to your `prometheus.yml` scrape configuration. Because the endpoint requires no authentication, no bearer token or basic auth block is needed.
+
+```yaml
+scrape_configs:
+  - job_name: "ai-balancer-gateway"
+    static_configs:
+      - targets: ["your-domain.com:8000"]
+    metrics_path: /v1/metrics
+    scrape_interval: 15s
+```
+
+<Note>
+  If you run the gateway behind a reverse proxy that strips the `/v1` prefix, adjust `metrics_path` accordingly or expose the endpoint directly on a separate internal port.
+</Note>

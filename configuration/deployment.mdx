@@ -1,0 +1,164 @@
+---
+title: "Deploy AI Balancer with Docker or Coolify platform"
+description: "Deploy AI Balancer via Docker or Coolify with production HTTPS, CORS origins, port configuration, and health check monitoring for your gateway."
+---
+
+AI Balancer is a standard Python ASGI application and can run anywhere that supports Python 3.11 or Docker. This page covers two common deployment paths: a self-managed Docker container and a Coolify-managed deployment using the included `coolify.yaml` configuration.
+
+## Docker deployment
+
+The included `Dockerfile` creates a minimal image based on `python:3.11-slim`. It installs dependencies, copies the application, exposes port 8000, and starts the server with uvicorn.
+
+<Steps>
+  <Step title="Build the Docker image">
+    Run the build from the project root. This installs all Python dependencies from `requirements.txt` into the image.
+
+    ```bash
+    docker build -t ai-balancer-gateway .
+    ```
+
+    The Dockerfile used is:
+
+    ```dockerfile
+    FROM python:3.11-slim
+
+    WORKDIR /app
+
+    COPY requirements.txt .
+    RUN pip install -r requirements.txt
+
+    COPY . .
+
+    EXPOSE 8000
+
+    CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ```
+  </Step>
+  <Step title="Run the container">
+    Pass your provider API keys as environment variables with `-e`. At minimum you need one valid provider key.
+
+    ```bash
+    docker run -d \
+      -p 8000:8000 \
+      -e GROK_API_KEY=your_grok_key \
+      -e CEREBRAS_API_KEY=your_cerebras_key \
+      -e GEMINI_API_KEY=your_gemini_key \
+      -e OPENROUTER_API_KEY=your_openrouter_key \
+      ai-balancer-gateway
+    ```
+
+    The gateway starts on `http://localhost:8000`. On first boot, the admin API key is printed to the container logs — retrieve it with:
+
+    ```bash
+    docker logs <container_id>
+    ```
+  </Step>
+  <Step title="Verify the deployment">
+    Check that the gateway is healthy and at least one provider is active:
+
+    ```bash
+    curl http://localhost:8000/v1/health
+    curl http://localhost:8000/v1/providers
+    ```
+
+    Both endpoints require a valid `X-API-Key` header. Use the admin key printed in the previous step.
+  </Step>
+</Steps>
+
+<Note>
+Set `PRODUCTION_MODE=true` when deploying behind a TLS-terminating load balancer or reverse proxy. This enables the HTTP→HTTPS redirect middleware, which issues a `301 Moved Permanently` for all non-localhost HTTP requests.
+</Note>
+
+## Coolify deployment
+
+The repository includes a `coolify.yaml` configuration file that describes the build and runtime settings for [Coolify](https://coolify.io), a self-hosted PaaS.
+
+```yaml
+buildpack: nixpacks
+nixpacks:
+  python_version: "3.11"
+
+port: 8000
+
+start_command: uvicorn main:app --host 0.0.0.0 --port $PORT
+```
+
+Coolify detects Python automatically via Nixpacks — no Dockerfile is needed. To deploy:
+
+1. Connect your GitHub repository to your Coolify instance.
+2. Create a new service and point it at the repository root.
+3. In the Coolify environment variables panel, set at least one provider API key (e.g., `GROK_API_KEY`). All variables listed in `coolify.yaml` under `env_variables` are pre-populated with defaults where applicable.
+4. Deploy. Coolify runs `uvicorn main:app --host 0.0.0.0 --port $PORT` and performs health checks against `/health` and `/providers`.
+
+The `coolify.yaml` health check configuration:
+
+```yaml
+health_checks:
+  - path: /health
+    timeout: 30
+    interval: 10
+  - path: /providers
+    timeout: 30
+    interval: 10
+```
+
+## Production mode and HTTPS
+
+Set `PRODUCTION_MODE=true` to enable the HTTPS redirect middleware:
+
+```bash
+PRODUCTION_MODE=true
+```
+
+When enabled, any HTTP request that originates from a non-localhost host is redirected to the HTTPS equivalent with a `301` status code. Requests to `/docs` (the Swagger UI) are excluded from the redirect to preserve local API exploration. The redirect logic is in `main.py`:
+
+```python
+production_mode = os.getenv("PRODUCTION_MODE", "false").lower() == "true"
+
+if production_mode:
+    is_http = request.url.scheme == "http"
+    is_localhost = host.startswith("localhost") or host.startswith("127.0.0.1")
+    is_docs_endpoint = request.url.path.startswith("/docs")
+
+    if is_http and not is_localhost and not is_docs_endpoint:
+        https_url = f"https://{host}{request.url.path}"
+        return Response(status_code=301, headers={"Location": https_url})
+```
+
+## CORS configuration
+
+The default CORS policy permits `http://localhost:3000` and `http://localhost:8000`. For production, set `CORS_ALLOWED_ORIGINS` to a comma-separated list of your application origins:
+
+```bash
+CORS_ALLOWED_ORIGINS=https://app.example.com,https://admin.example.com
+```
+
+Allowed methods are `GET`, `POST`, `PUT`, `DELETE`, and `OPTIONS`. All request headers are permitted. Credentials (cookies, authorization headers) are supported.
+
+## Host and port configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `HOST` | `0.0.0.0` | Network interface the server binds to. Use `127.0.0.1` to restrict to loopback only. |
+| `PORT` | `8000` | Port the server listens on. Override when `8000` is taken or your platform assigns a dynamic port. |
+
+To run on a custom port:
+
+```bash
+docker run -d \
+  -p 3000:3000 \
+  -e PORT=3000 \
+  -e GROK_API_KEY=your_key \
+  ai-balancer-gateway
+```
+
+## Health check endpoint
+
+Use `GET /v1/health` for uptime monitoring, load balancer health probes, and readiness checks. The endpoint returns the status of all registered providers:
+
+```bash
+curl http://localhost:8000/v1/health \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
+A healthy response indicates that the gateway is running and at least one provider is reachable. An unhealthy response (any provider returning a non-200 status) is still returned as HTTP 200 — the body contains per-provider status details so your monitoring system can distinguish partial from total failures.

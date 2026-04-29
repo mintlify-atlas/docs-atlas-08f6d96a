@@ -1,0 +1,198 @@
+---
+title: "Authenticate requests to the AI Balancer API gateway"
+description: "Learn how X-API-Key authentication works: get your admin key on first startup, create client keys, set rate limits, and handle 401 and 403 error responses."
+---
+
+Every request to AI Balancer (except for public system endpoints) must include an API key in the `X-API-Key` HTTP header. The gateway validates the key on each request, checks that it is active, and applies the rate limit associated with it. There are two key types — admin and client — with different permission levels.
+
+## Getting your admin key on first startup
+
+When you start AI Balancer for the first time, the gateway automatically creates an admin API key and prints it to the console:
+
+```
+[INFO] [system] ⚠️ ADMIN API KEY: a1b2c3d4e5f6... ⚠️ (SAVE IT - only shown once)
+```
+
+<Warning>
+  This is the only time the full key is displayed. Copy it immediately and store it in a secure location such as a password manager or a secrets vault. If you lose the admin key you must delete `data/api_keys.json` and restart the server — this revokes all existing keys and generates a new admin key.
+</Warning>
+
+On subsequent restarts, the admin key is not reprinted. A recovery marker is written to `data/.admin_key`, but it does not contain the full plaintext key.
+
+## Authenticating requests
+
+Pass your API key in the `X-API-Key` header on every protected request:
+
+```bash
+curl -X POST http://localhost:8000/v1/chat \
+  -H "X-API-Key: your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+The header name is case-insensitive. The value must be the full plaintext key that was returned at creation time.
+
+## Creating client API keys
+
+Use your admin key to create client keys for your applications. You can create as many client keys as you need, each with its own name and rate limit.
+
+```bash
+curl -X POST http://localhost:8000/admin/keys \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: YOUR_ADMIN_KEY" \
+  -d '{"name": "my-app", "rate_limit": 100}'
+```
+
+The response returns the full key exactly once:
+
+```json
+{
+  "api_key": "9f3c1a2b8d7e4f5a6b0c3d2e1f4a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a",
+  "name": "my-app",
+  "rate_limit": 100,
+  "is_admin": false,
+  "message": "Guarda esta key - no se puede recuperar después"
+}
+```
+
+**Request parameters:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | Yes | Unique identifier for the key. Cannot be empty. |
+| `rate_limit` | integer | No | Maximum requests per minute. Defaults to `100`. |
+| `is_admin` | boolean | No | Set to `true` to grant admin privileges. Defaults to `false`. |
+
+## Admin vs. client keys
+
+| Capability | Client key | Admin key |
+|---|---|---|
+| Send chat requests (`/v1/chat`, `/v2/chat`) | Yes | Yes |
+| Create new API keys (`POST /admin/keys`) | No | Yes |
+| List all API keys (`GET /admin/keys`) | No | Yes |
+| Delete own key (`DELETE /admin/keys/{name}`) | Yes | Yes |
+| Delete any key (`DELETE /admin/keys/{name}`) | No | Yes |
+
+To create an admin key, include `"is_admin": true` in the request body. Only an existing admin key can make this call:
+
+```bash
+curl -X POST http://localhost:8000/admin/keys \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: YOUR_ADMIN_KEY" \
+  -d '{"name": "ops-team", "rate_limit": 1000, "is_admin": true}'
+```
+
+## Key security
+
+AI Balancer is designed so that a compromised storage layer does not expose usable keys:
+
+- **SHA-256 hashing** — Keys are hashed with SHA-256 before being written to `data/api_keys.json`. The plaintext key is never persisted.
+- **Single display** — The full key is returned only in the API response at creation time. After that, only the first 8 characters (a `key_prefix`) are stored for identification purposes.
+- **No recovery** — If a key is lost, it cannot be retrieved. Create a new key and revoke the old one.
+- **Ownership enforcement** — A client key can only be used to delete itself. Admin keys can delete any key.
+
+## Rate limiting
+
+Each key has an independent rate limit measured in requests per minute. The default is 100 requests per minute for both `/v1/chat` and `/v2/chat`. Batch requests at `/v1/batch/chat` are limited to 5 per minute regardless of key type.
+
+| Endpoint | Default limit |
+|---|---|
+| `POST /v1/chat` | 100/min per key |
+| `POST /v1/chat/no-stream` | 100/min per key |
+| `POST /v2/chat` | 100/min per key |
+| `POST /v2/chat/no-stream` | 100/min per key |
+| `POST /v1/batch/chat` | 5/min per key |
+
+You can set a custom limit when creating a key:
+
+```bash
+curl -X POST http://localhost:8000/admin/keys \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: YOUR_ADMIN_KEY" \
+  -d '{"name": "high-volume-app", "rate_limit": 500}'
+```
+
+## Revoking a key
+
+To revoke a key by name, send a `DELETE` request authenticated with either the key itself or an admin key:
+
+```bash
+curl -X DELETE http://localhost:8000/admin/keys/my-app \
+  -H "X-API-Key: YOUR_ADMIN_KEY"
+```
+
+A successful revocation returns:
+
+```json
+{
+  "message": "Key 'my-app' revocada exitosamente"
+}
+```
+
+Revoked keys are marked inactive immediately. They cannot be reactivated — create a new key if you need to restore access.
+
+## Error responses
+
+The gateway returns standard HTTP error codes for authentication and authorization failures.
+
+**401 Unauthorized — missing key:**
+
+```json
+{
+  "detail": "X-API-Key header required"
+}
+```
+
+Returned when the request does not include an `X-API-Key` header.
+
+**401 Unauthorized — invalid key:**
+
+```json
+{
+  "detail": "Invalid API Key"
+}
+```
+
+Returned when the key does not match any active entry in the key store.
+
+**403 Forbidden — insufficient permissions:**
+
+```json
+{
+  "detail": "No puedes eliminar keys de otros usuarios"
+}
+```
+
+Returned when a non-admin key attempts to delete a key it does not own.
+
+## Listing keys
+
+To audit active keys, use the list endpoint. It returns metadata only — the full key values are never included:
+
+```bash
+curl http://localhost:8000/admin/keys \
+  -H "X-API-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "keys": [
+    {
+      "name": "admin",
+      "rate_limit": 1000,
+      "is_admin": true,
+      "active": true,
+      "created_at": "2026-04-29T10:00:01Z"
+    },
+    {
+      "name": "my-app",
+      "rate_limit": 100,
+      "is_admin": false,
+      "active": true,
+      "created_at": "2026-04-29T10:05:33Z"
+    }
+  ]
+}
+```
+
+Admin keys are listed first, followed by client keys sorted alphabetically by name.

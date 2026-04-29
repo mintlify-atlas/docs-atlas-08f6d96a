@@ -1,133 +1,86 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
-icon: 'star'
+title: "AI Balancer: unified LLM gateway with load balancing"
+description: "AI Balancer API Gateway centralizes access to Grok, Cerebras, Gemini, and OpenRouter behind a single API with Round Robin load balancing and Circuit Breaker resilience."
 ---
 
-## Setting up
+AI Balancer is a FastAPI-based API gateway that routes your LLM requests across multiple providers — Grok, Cerebras, Gemini, and OpenRouter — through a single unified interface. It handles provider selection automatically using Round Robin load balancing, protects your application from cascading failures with an adaptive Circuit Breaker, and secures access with per-client API key management.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get your first response from an LLM provider in under 5 minutes.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Authentication" icon="key" href="/authentication">
+    Learn how to create and use API keys to authenticate requests.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="API Reference" icon="code" href="/api-reference/chat/v1-chat">
+    Explore all endpoints: chat, batch, system status, and admin.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Core Concepts" icon="layer-group" href="/concepts/architecture">
+    Understand the architecture, load balancing, and Circuit Breaker.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What AI Balancer does
 
-Everything you need to create world-class documentation.
+Instead of integrating with multiple LLM providers individually, you send all your requests to AI Balancer. It selects the best available provider, handles retries, and streams responses back to your client — all through a consistent API.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
+<CardGroup cols={2}>
+  <Card title="Round Robin load balancing" icon="arrows-spin" href="/concepts/load-balancing">
+    Requests are automatically distributed across all active providers.
   </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
+  <Card title="Circuit Breaker protection" icon="shield-halved" href="/concepts/circuit-breaker">
+    Failing providers are temporarily removed to prevent cascading errors.
   </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
+  <Card title="Streaming responses" icon="bolt" href="/guides/streaming">
+    Real-time token streaming via Server-Sent Events on all chat endpoints.
   </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
+  <Card title="Batch processing" icon="layer-group" href="/guides/batch-processing">
+    Send up to 10 requests in a single call with parallel provider routing.
   </Card>
-</Columns>
+</CardGroup>
 
-## Make your content agent ready
+## Get started in 3 steps
 
-Make your docs work for humans and AI agents alike.
+<Steps>
+  <Step title="Install and configure">
+    Clone the repository, install dependencies, and copy `.env.example` to `.env` with your provider API keys.
 
-<Columns cols={2}>
-  <Card
-    title="Prompt component"
-    icon="robot"
-    href="/agent-ready/prompt"
-  >
-    Embed shareable AI prompts readers can copy or open in Cursor.
-  </Card>
-  <Card
-    title="Visibility"
-    icon="eye"
-    href="/agent-ready/visibility"
-  >
-    Show different content to humans and agents reading your docs.
-  </Card>
-  <Card
-    title="Contextual menu"
-    icon="bolt"
-    href="/agent-ready/contextual"
-  >
-    Give readers one-click access to Claude, ChatGPT, Cursor, and more.
-  </Card>
-  <Card
-    title="AI coding tools"
-    icon="wand-magic-sparkles"
-    href="/ai-tools/claude-code"
-  >
-    Set up Claude Code, Cursor, or Windsurf with Mintlify's skill.
-  </Card>
-</Columns>
+    ```bash
+    git clone https://github.com/Pyhton-Lab/api-gateway-ai.git
+    cd api-gateway-ai
+    pip install -r requirements.txt
+    cp .env.example .env
+    ```
+  </Step>
+  <Step title="Start the server">
+    Run the gateway. On first start, an admin API key is printed to the console — save it.
 
-## Need inspiration?
+    ```bash
+    python main.py
+    # ⚠️ ADMIN API KEY: sk-abc123... ⚠️ (SAVE IT - only shown once)
+    ```
+  </Step>
+  <Step title="Send your first request">
+    Use your admin key to create a client key, then call the chat endpoint.
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+    ```bash
+    curl -X POST http://localhost:8000/v1/chat \
+      -H "X-API-Key: YOUR_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{"messages": [{"role": "user", "content": "Hello!"}]}'
+    ```
+  </Step>
+</Steps>
+
+## API versions
+
+AI Balancer supports two API versions with different request formats:
+
+<CardGroup cols={2}>
+  <Card title="API v1 — OpenAI-style messages" icon="message" href="/concepts/api-versioning">
+    Use a `messages` array with `role` and `content` fields, compatible with OpenAI-style clients.
+  </Card>
+  <Card title="API v2 — Advanced options" icon="sliders" href="/concepts/api-versioning">
+    Use a `prompt` string with `system_prompt`, `temperature`, `max_tokens`, and other controls.
+  </Card>
+</CardGroup>

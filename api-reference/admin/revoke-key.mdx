@@ -1,0 +1,89 @@
+---
+title: "DELETE /admin/keys/{name} — revoke an API key"
+description: "DELETE /admin/keys/{name} — deactivate an API key. Regular keys can only delete themselves; admin keys can revoke any key. Ownership check returns 403."
+---
+
+The revoke key endpoint permanently deactivates an API key, preventing it from being used for any further requests. Revocation is enforced immediately with no grace period. Regular (non-admin) users can only revoke the key associated with their own identity — attempting to delete a different user's key returns `403 Forbidden`. Admin keys can revoke any key in the system. Once a key is revoked it is removed from the list of active keys and cannot be recovered; a new key must be created if access needs to be restored.
+
+<Warning>
+  Revocation is **permanent and irreversible**. A revoked key cannot be reinstated. If a regular user attempts to revoke a key they do not own, the request is rejected with `403 Forbidden`. Only admin keys can delete keys belonging to other users.
+</Warning>
+
+## Endpoint
+
+```
+DELETE /admin/keys/{name}
+```
+
+## Authentication
+
+Requires a valid API key in the `X-API-Key` header. The ownership rules described below are enforced based on the key provided here.
+
+```
+X-API-Key: your_api_key_here
+```
+
+## Path parameters
+
+<ResponseField name="name" type="string" required>
+  The name of the API key to revoke. This must match the `name` field used when the key was created. Names are case-sensitive.
+</ResponseField>
+
+## Ownership rules
+
+| Caller type | Can revoke |
+|------------|------------|
+| Regular key | Only the key with the same `name` as the caller |
+| Admin key | Any key, including other admin keys |
+
+## HTTP status codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | Key revoked successfully |
+| `401 Unauthorized` | Missing or invalid API key in the request header |
+| `403 Forbidden` | Caller is not authorized to revoke the target key |
+| `404 Not Found` | No active key with the specified name exists |
+
+## Response fields (200 OK)
+
+<ResponseField name="message" type="string">
+  Confirmation message in the format `"Key '{name}' revoked successfully"`.
+</ResponseField>
+
+## Example request
+
+```bash
+curl -X DELETE https://your-domain.com/admin/keys/my-client-app \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
+## Example responses
+
+**200 OK — key revoked**
+
+```json
+{
+  "message": "Key 'my-client-app' revoked successfully"
+}
+```
+
+**403 Forbidden — ownership violation**
+
+```json
+{
+  "detail": "No puedes eliminar keys de otros usuarios"
+}
+```
+
+**404 Not Found — key does not exist**
+
+```json
+{
+  "detail": "Key no encontrada"
+}
+```
+
+<Note>
+  To revoke your own key, pass your own API key in the `X-API-Key` header and the key's name in the URL path. After the request succeeds your key will no longer be valid for any further requests, including attempts to create a replacement.
+</Note>

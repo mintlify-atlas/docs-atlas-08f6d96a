@@ -1,0 +1,98 @@
+---
+title: "GET /v1/health — check provider health status"
+description: "Poll the health endpoint to get a real-time map of which LLM providers are reachable. Returns 200 when all are healthy and 503 when any provider is down."
+---
+
+The health endpoint performs a live reachability check against every registered LLM provider — grok, cerebras, gemini, and openrouter — and returns a status map so you can detect partial outages before they affect your users. When all providers respond successfully the overall `status` is `"healthy"` and the response code is `200 OK`. If one or more providers fail their check, `status` becomes `"degraded"` and the gateway still responds with `200 OK`, but the body contains the per-provider breakdown so your monitoring can detect partial outages.
+
+## Endpoint
+
+```
+GET /v1/health
+GET /v2/health
+```
+
+## Authentication
+
+All requests must include a valid API key in the `X-API-Key` header. Requests without a key receive `401 Unauthorized`.
+
+```
+X-API-Key: your_api_key_here
+```
+
+## Request
+
+No request body is required for this endpoint.
+
+## Response fields
+
+<ResponseField name="status" type="string" required>
+  Overall health summary. Either `"healthy"` (all providers reachable) or `"degraded"` (one or more providers unreachable).
+</ResponseField>
+
+<ResponseField name="providers" type="object" required>
+  Map of provider name to boolean health status.
+
+  <Expandable title="providers">
+    <ResponseField name="grok" type="boolean">
+      `true` if the grok provider is reachable, `false` otherwise.
+    </ResponseField>
+    <ResponseField name="cerebras" type="boolean">
+      `true` if the cerebras provider is reachable, `false` otherwise.
+    </ResponseField>
+    <ResponseField name="gemini" type="boolean">
+      `true` if the gemini provider is reachable, `false` otherwise.
+    </ResponseField>
+    <ResponseField name="openrouter" type="boolean">
+      `true` if the openrouter provider is reachable, `false` otherwise.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## HTTP status codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | Request completed — check the `status` field to determine health |
+| `401 Unauthorized` | Missing or invalid API key |
+
+## Example request
+
+```bash
+curl -X GET https://your-domain.com/v1/health \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
+## Example responses
+
+**200 OK — all providers healthy**
+
+```json
+{
+  "status": "healthy",
+  "providers": {
+    "grok": true,
+    "cerebras": true,
+    "gemini": true,
+    "openrouter": true
+  }
+}
+```
+
+**200 OK — one provider down (degraded)**
+
+```json
+{
+  "status": "degraded",
+  "providers": {
+    "grok": false,
+    "cerebras": true,
+    "gemini": true,
+    "openrouter": true
+  }
+}
+```
+
+<Note>
+  A `"degraded"` status does not mean the gateway is non-functional. If only one provider is unhealthy, the gateway can still route requests to the remaining healthy providers. Check the `providers` map to determine which specific services are affected.
+</Note>

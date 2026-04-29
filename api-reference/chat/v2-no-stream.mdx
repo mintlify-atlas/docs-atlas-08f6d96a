@@ -1,0 +1,171 @@
+---
+title: "POST /v2/chat/no-stream — non-streaming v2 chat"
+description: "POST /v2/chat/no-stream — send a prompt with system_prompt and options, receive a single JSON response with full text, provider info, and latency."
+---
+
+The `/v2/chat/no-stream` endpoint combines the structured v2 request format — `prompt`, `system_prompt`, `model`, `provider`, and `options` — with a synchronous response. The gateway waits for the LLM provider to finish generating before returning a single JSON object. This is the v2 counterpart to `/v1/chat/no-stream` and is well-suited for use cases where you need full control over generation parameters but do not require or support streaming in your client.
+
+## Request
+
+**`POST /v2/chat/no-stream`**
+
+| Header | Required | Value |
+|---|---|---|
+| `X-API-Key` | Yes | Your API key |
+| `Content-Type` | Yes | `application/json` |
+
+**Rate limit:** 100 requests per minute per API key.
+
+### Request body
+
+<ParamField body="prompt" type="string" required>
+  The user message to send to the model. Must be between 1 and 10,000 characters. Whitespace-only strings are rejected.
+</ParamField>
+
+<ParamField body="system_prompt" type="string">
+  Custom instructions that guide the model's behavior for this request. Maximum 5,000 characters. Use this to set the tone, persona, output format, or constraints for the response.
+</ParamField>
+
+<ParamField body="model" type="string">
+  A specific model identifier to request from the provider (e.g., `"grok-2"`, `"gemini-2.0-flash"`). Maximum 50 characters. When omitted, the provider uses its default model.
+</ParamField>
+
+<ParamField body="provider" type="string">
+  Pin the request to a specific LLM provider. Accepted values: `grok`, `cerebras`, `gemini`, `openrouter`. When omitted, the gateway uses round-robin load balancing across all healthy providers.
+</ParamField>
+
+<ParamField body="options" type="object">
+  Advanced generation parameters. All fields have sensible defaults so this object is fully optional.
+
+  <Expandable title="options properties">
+    <ParamField body="options.temperature" type="number" default="0.7">
+      Controls output randomness. Range 0–2. Lower values produce more deterministic output; higher values produce more creative or varied responses.
+    </ParamField>
+
+    <ParamField body="options.max_tokens" type="integer" default="4096">
+      Maximum number of tokens to generate in the response. Range 1–32,000.
+    </ParamField>
+
+    <ParamField body="options.top_p" type="number" default="1.0">
+      Nucleus sampling threshold. Range 0–1. Only tokens comprising the top `top_p` probability mass are considered at each generation step.
+    </ParamField>
+
+    <ParamField body="options.response_format" type="string" default="text">
+      Desired output format. Accepted values: `"text"` or `"json"`. Use `"json"` when you need the model to return a machine-readable JSON object.
+    </ParamField>
+
+    <ParamField body="options.seed" type="integer">
+      Integer seed for deterministic generation. When set, the same prompt and seed should produce the same output across repeated calls (subject to provider support).
+    </ParamField>
+
+    <ParamField body="options.stop" type="string[]">
+      List of stop sequences. The model stops generating as soon as any sequence in this list is produced. Defaults to an empty list (no stop sequences).
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## Response
+
+**`200 OK`** — `Content-Type: application/json`
+
+<ResponseField name="content" type="string">
+  The complete generated text from the LLM. This is the full response, not a chunked stream.
+</ResponseField>
+
+<ResponseField name="provider" type="object">
+  Information about the provider that handled the request.
+
+  <Expandable title="provider properties">
+    <ResponseField name="provider.service" type="string">
+      The provider name (e.g., `"grok"`, `"cerebras"`, `"gemini"`, `"openrouter"`).
+    </ResponseField>
+
+    <ResponseField name="provider.model" type="string">
+      The model identifier used (e.g., `"grok-2"`, `"gemini-2.0-flash"`).
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="response_time_ms" type="number">
+  Total time in milliseconds from when the gateway received the request to when the provider finished generating the response.
+</ResponseField>
+
+## Example
+
+<RequestExample>
+
+```bash cURL
+curl -X POST https://your-domain.com/v2/chat/no-stream \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Write a short poem about technology",
+    "system_prompt": "Be creative and use metaphors",
+    "options": {
+      "temperature": 0.9,
+      "max_tokens": 200,
+      "top_p": 0.95,
+      "seed": 42
+    }
+  }'
+```
+
+</RequestExample>
+
+<ResponseExample>
+
+```json 200
+{
+  "content": "In wires deep and code so bright,\nTechnology shines through the night.\nA billion thoughts in microseconds flow,\nThe silicon mind puts on a show.",
+  "provider": {
+    "service": "grok",
+    "model": "grok-2"
+  },
+  "response_time_ms": 1567.3
+}
+```
+
+</ResponseExample>
+
+## Error responses
+
+| Status | Description |
+|---|---|
+| `401 Unauthorized` | Missing or invalid `X-API-Key` header. |
+| `422 Unprocessable Entity` | Request body failed validation — for example, `prompt` is empty or exceeds 10,000 characters, `options.max_tokens` is outside 1–32,000, or `options.response_format` is not `"text"` or `"json"`. |
+| `429 Too Many Requests` | Rate limit of 100 requests/minute exceeded for this API key. |
+| `503 Service Unavailable` | All configured LLM providers are unreachable or have open circuit breakers. |
+
+```json 401
+{
+  "detail": "Invalid or missing API key"
+}
+```
+
+```json 422
+{
+  "detail": [
+    {
+      "loc": ["body", "prompt"],
+      "msg": "ensure this value has at least 1 characters",
+      "type": "value_error.any_str.min_length"
+    }
+  ]
+}
+```
+
+```json 429
+{
+  "detail": "Rate limit exceeded",
+  "limit": "100/minute",
+  "remaining": 0,
+  "reset": "2026-04-29T10:31:00Z"
+}
+```
+
+```json 503
+{
+  "detail": "No providers available",
+  "reason": "All circuit breakers are open"
+}
+```

@@ -1,0 +1,131 @@
+---
+title: "POST /v1/chat — streaming chat with LLM providers"
+description: "POST /v1/chat — send a messages array and receive an SSE stream of token chunks from the selected or auto-balanced LLM provider. Rate limited to 100/min."
+---
+
+The `/v1/chat` endpoint accepts a list of chat messages and returns a streaming response using Server-Sent Events (SSE). The gateway selects an available LLM provider automatically via round-robin load balancing, or you can pin a specific provider by name. Each event in the stream contains a token chunk along with the provider and model that produced it. The stream ends with a terminal `data: [DONE]` event.
+
+## Request
+
+**`POST /v1/chat`**
+
+| Header | Required | Value |
+|---|---|---|
+| `X-API-Key` | Yes | Your API key |
+| `Content-Type` | Yes | `application/json` |
+
+**Rate limit:** 100 requests per minute per API key.
+
+### Request body
+
+<ParamField body="messages" type="object[]" required>
+  Ordered list of conversation messages. Minimum 1, maximum 50 messages. Each item must include `role` and `content`.
+
+  <Expandable title="messages item properties">
+    <ParamField body="messages[].role" type="string" required>
+      The role of the message author. Accepted values: `"user"`, `"assistant"`, or `"system"`.
+    </ParamField>
+
+    <ParamField body="messages[].content" type="string" required>
+      The text content of the message. Must be between 1 and 10,000 characters. Whitespace-only strings are rejected.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="provider" type="string">
+  Pin the request to a specific LLM provider. Accepted values: `grok`, `cerebras`, `gemini`, `openrouter`. When omitted, the gateway uses round-robin load balancing across all healthy providers.
+</ParamField>
+
+## Response
+
+**`Content-Type: text/event-stream`**
+
+The response is a stream of SSE events. Each event is a JSON object on a `data:` line, followed by a blank line. The stream terminates with `data: [DONE]`.
+
+<ResponseField name="content" type="string">
+  A single token chunk from the model output. Concatenate all `content` values in order to reconstruct the full response.
+</ResponseField>
+
+<ResponseField name="provider" type="string">
+  The name of the provider that handled this request (e.g., `"grok"`, `"cerebras"`).
+</ResponseField>
+
+<ResponseField name="model" type="string">
+  The model identifier used by the provider (e.g., `"grok-2"`, `"gemini-2.0-flash"`).
+</ResponseField>
+
+## Example
+
+<RequestExample>
+
+```bash cURL
+curl -X POST https://your-domain.com/v1/chat \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "user", "content": "What is artificial intelligence?"}
+    ]
+  }'
+```
+
+</RequestExample>
+
+<ResponseExample>
+
+```text Streaming response
+data: {"content": "Artificial", "provider": "grok", "model": "grok-2"}
+
+data: {"content": " intelligence", "provider": "grok", "model": "grok-2"}
+
+data: {"content": " (AI)", "provider": "grok", "model": "grok-2"}
+
+data: {"content": " refers to", "provider": "grok", "model": "grok-2"}
+
+data: [DONE]
+```
+
+</ResponseExample>
+
+## Error responses
+
+| Status | Description |
+|---|---|
+| `401 Unauthorized` | Missing or invalid `X-API-Key` header. |
+| `422 Unprocessable Entity` | Request body failed validation — for example, `messages` is empty, a `role` value is not one of `user`/`assistant`/`system`, or `content` exceeds 10,000 characters. |
+| `429 Too Many Requests` | Rate limit of 100 requests/minute exceeded for this API key. |
+| `503 Service Unavailable` | All configured LLM providers are unreachable or have open circuit breakers. |
+
+```json 401
+{
+  "detail": "Invalid or missing API key"
+}
+```
+
+```json 422
+{
+  "detail": [
+    {
+      "loc": ["body", "messages", 0, "role"],
+      "msg": "value is not a valid enumeration member",
+      "type": "type_error.enum"
+    }
+  ]
+}
+```
+
+```json 429
+{
+  "detail": "Rate limit exceeded",
+  "limit": "100/minute",
+  "remaining": 0,
+  "reset": "2026-04-29T10:31:00Z"
+}
+```
+
+```json 503
+{
+  "detail": "No providers available",
+  "reason": "All circuit breakers are open"
+}
+```

@@ -1,0 +1,195 @@
+---
+title: "POST /v1/batch/chat — batch multiple chat requests"
+description: "Submit up to 10 independent chat requests in a single API call and receive aggregated results with per-request content, provider, and latency information."
+---
+
+The `/v1/batch/chat` endpoint lets you process multiple chat conversations in a single HTTP call. Each item in the `requests` array is an independent chat request with its own `messages` list and an optional `provider` pin. Requests are processed sequentially and results are returned together in a single response object. Aggregated metadata — total requests, successful count, failed count, and total wall-clock time — is included alongside the per-request results.
+
+<Warning>
+  This endpoint has a strict rate limit of **5 requests per minute** per API key. This limit applies to the batch call itself, not to the individual requests within the batch. Plan your batch sizes accordingly.
+</Warning>
+
+<Note>
+  A single batch call may contain a maximum of **10 chat requests**. If you send more than 10 items in the `requests` array, the gateway returns a `400 Bad Request` error before processing any items.
+</Note>
+
+## Request
+
+**`POST /v1/batch/chat`**
+
+| Header | Required | Value |
+|---|---|---|
+| `X-API-Key` | Yes | Your API key |
+| `Content-Type` | Yes | `application/json` |
+
+**Rate limit:** 5 requests per minute per API key (strict).
+
+### Request body
+
+<ParamField body="requests" type="object[]" required>
+  List of chat request objects to process. Minimum 1, maximum 10 items.
+
+  <Expandable title="requests item properties">
+    <ParamField body="requests[].messages" type="object[]" required>
+      Ordered list of conversation messages for this individual chat. Minimum 1, maximum 50 messages per request item.
+
+      <Expandable title="messages item properties">
+        <ParamField body="requests[].messages[].role" type="string" required>
+          The role of the message author. Accepted values: `"user"`, `"assistant"`, or `"system"`.
+        </ParamField>
+
+        <ParamField body="requests[].messages[].content" type="string" required>
+          The text content of the message. Must be between 1 and 10,000 characters.
+        </ParamField>
+      </Expandable>
+    </ParamField>
+
+    <ParamField body="requests[].provider" type="string">
+      Pin this individual request to a specific LLM provider. Accepted values: `grok`, `cerebras`, `gemini`, `openrouter`. When omitted, round-robin load balancing selects the provider for this item.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## Response
+
+**`200 OK`** — `Content-Type: application/json`
+
+The response is always returned with a `200` status even if individual items within the batch failed. Check the `success` field of each result to determine per-item outcomes.
+
+<ResponseField name="results" type="object[]">
+  List of result objects, one per item in the input `requests` array, in the same order.
+
+  <Expandable title="results item properties">
+    <ResponseField name="results[].success" type="boolean">
+      Whether this individual request completed successfully. When `false`, the `error` field contains the failure reason and `content` will be `null`.
+    </ResponseField>
+
+    <ResponseField name="results[].content" type="string">
+      The full generated text from the model for this request. Present when `success` is `true`, `null` otherwise.
+    </ResponseField>
+
+    <ResponseField name="results[].provider" type="string">
+      The provider name that handled this individual request (e.g., `"grok"`, `"cerebras"`).
+    </ResponseField>
+
+    <ResponseField name="results[].model" type="string">
+      The model identifier used by the provider for this request (e.g., `"grok-2"`, `"gemini-2.0-flash"`).
+    </ResponseField>
+
+    <ResponseField name="results[].response_time_ms" type="number">
+      Time in milliseconds taken to generate the response for this individual request.
+    </ResponseField>
+
+    <ResponseField name="results[].error" type="string">
+      Error message describing why this individual request failed. Only present when `success` is `false`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="total_requests" type="integer">
+  The total number of items that were submitted in the batch.
+</ResponseField>
+
+<ResponseField name="successful_requests" type="integer">
+  The number of items that completed successfully.
+</ResponseField>
+
+<ResponseField name="failed_requests" type="integer">
+  The number of items that failed. Check the `error` field on the corresponding result for details.
+</ResponseField>
+
+<ResponseField name="total_time_ms" type="number">
+  Total wall-clock time in milliseconds for the entire batch operation, from receipt of the request to completion of all items.
+</ResponseField>
+
+## Example
+
+<RequestExample>
+
+```bash cURL
+curl -X POST https://your-domain.com/v1/batch/chat \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "requests": [
+      {
+        "messages": [
+          {"role": "user", "content": "What is the capital of France?"}
+        ],
+        "provider": "grok"
+      },
+      {
+        "messages": [
+          {"role": "system", "content": "You are a helpful assistant."},
+          {"role": "user", "content": "How many planets are in the solar system?"}
+        ],
+        "provider": "cerebras"
+      }
+    ]
+  }'
+```
+
+</RequestExample>
+
+<ResponseExample>
+
+```json 200
+{
+  "results": [
+    {
+      "success": true,
+      "content": "The capital of France is Paris.",
+      "provider": "grok",
+      "model": "grok-2",
+      "response_time_ms": 843.2,
+      "error": null
+    },
+    {
+      "success": true,
+      "content": "There are 8 planets in our solar system: Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, and Neptune.",
+      "provider": "cerebras",
+      "model": "gemma-2-9b-it",
+      "response_time_ms": 1102.7,
+      "error": null
+    }
+  ],
+  "total_requests": 2,
+  "successful_requests": 2,
+  "failed_requests": 0,
+  "total_time_ms": 1958.4
+}
+```
+
+</ResponseExample>
+
+## Error responses
+
+These errors apply to the batch call as a whole. Individual item failures are reported inside the `results` array with `success: false`, not as HTTP errors.
+
+| Status | Description |
+|---|---|
+| `400 Bad Request` | The `requests` array contains more than 10 items. |
+| `401 Unauthorized` | Missing or invalid `X-API-Key` header. |
+| `422 Unprocessable Entity` | Request body failed validation — for example, `requests` is empty or a message item has an invalid `role`. |
+| `429 Too Many Requests` | Rate limit of 5 batch requests/minute exceeded for this API key. |
+
+```json 400
+{
+  "detail": "El batch excede el límite de 10 requests"
+}
+```
+
+```json 401
+{
+  "detail": "Invalid or missing API key"
+}
+```
+
+```json 429
+{
+  "detail": "Rate limit exceeded",
+  "limit": "5/minute",
+  "remaining": 0,
+  "reset": "2026-04-29T10:31:00Z"
+}
+```

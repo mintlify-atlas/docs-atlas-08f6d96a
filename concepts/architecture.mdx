@@ -1,0 +1,145 @@
+---
+title: "AI Balancer API Gateway: Architecture Overview"
+description: "Explore the five-layer architecture of AI Balancer: client auth, middleware, versioned API, orchestration with circuit breaker, and multi-provider routing."
+---
+
+AI Balancer is a centralized API gateway built with FastAPI that sits between your application and multiple LLM providers. Rather than managing separate integrations for Grok, Cerebras, Gemini, and OpenRouter, every request flows through a single entry point that handles authentication, rate limiting, load distribution, and fault tolerance automatically. The gateway abstracts provider-specific APIs behind a unified interface while preserving the flexibility to target a specific provider when needed.
+
+## Five-Layer Architecture
+
+The gateway is organized into five distinct layers, each with a well-defined responsibility. Requests pass top-to-bottom through these layers; responses travel back up.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         CLIENT LAYER                        │
+│              Request with X-API-Key header                  │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      MIDDLEWARE LAYER                       │
+│  GZip · CORS · TrustedHost · APIKeyMiddleware               │
+│  Rate Limiter (slowapi) · Security Headers · Request Size   │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    API LAYER  (FastAPI)                     │
+│   /v1/chat  /v1/chat/no-stream  /v1/circuit-breaker         │
+│   /v2/chat  /v2/chat/no-stream  /v2/circuit-breaker         │
+│   /admin/keys    /health    /metrics    /providers          │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   ORCHESTRATION LAYER                       │
+│  ┌──────────────────────┐   ┌──────────────────────────┐   │
+│  │   Service Registry   │   │  Circuit Breaker Manager │   │
+│  └──────────┬───────────┘   └───────────┬──────────────┘   │
+│             └─────────────┬─────────────┘                  │
+│                           ▼                                 │
+│            Round Robin Load Balancer                        │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      PROVIDER LAYER                         │
+│   ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌───────────┐  │
+│   │   Grok   │  │ Cerebras │  │  Gemini  │  │OpenRouter │  │
+│   └──────────┘  └──────────┘  └──────────┘  └───────────┘  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Client Layer
+
+Clients authenticate using the `X-API-Key` header. On first startup, the gateway auto-generates an admin key and prints it to the console — it is also saved to `data/.admin_key` for recovery. All subsequent client keys are created via `POST /admin/keys` using that admin key.
+
+API keys are stored as SHA-256 hashes; the plaintext value is only visible at creation time.
+
+### Middleware Layer
+
+Every inbound request passes through the following middleware stack before reaching any endpoint handler:
+
+| Middleware | Purpose |
+|---|---|
+| `GZipMiddleware` | Compresses responses |
+| `CORSMiddleware` | Configurable allowed origins via `CORS_ALLOWED_ORIGINS` |
+| `TrustedHostMiddleware` | Rejects requests from unlisted hosts |
+| `APIKeyMiddleware` | Validates `X-API-Key` against the key store |
+| `slowapi` rate limiter | Per-client request limiting (100/min for chat) |
+| `security_headers` | Adds `X-Frame-Options`, `X-Content-Type-Options`, `Content-Security-Policy`, `Cache-Control` |
+| `request_size_limit_middleware` | Rejects requests larger than 1 MB with HTTP 413 |
+
+### API Layer
+
+The API layer provides two versioned namespaces with equivalent chat endpoints:
+
+- **v1** — OpenAI-compatible `messages` array format, suitable for existing integrations
+- **v2** — Simplified `prompt` string with `system_prompt` and advanced `options` (temperature, max_tokens, top_p, seed, stop sequences, response format)
+
+Both versions expose circuit breaker status and reset endpoints. Admin and system endpoints live outside the versioned namespaces.
+
+### Orchestration Layer
+
+The orchestration layer is the decision engine. The `ServiceRegistry` (`app/registry.py`) maintains the list of registered providers and their associated `CircuitBreaker` instances. When a request arrives:
+
+1. If the request specifies a `provider`, the registry looks it up directly.
+2. Otherwise, `get_next_round_robin()` selects the next eligible provider.
+3. Before dispatching, the circuit breaker for the chosen provider is checked — an OPEN breaker causes an immediate 503 response.
+
+Learn more in [Load Balancing](/concepts/load-balancing) and [Circuit Breaker](/concepts/circuit-breaker).
+
+### Provider Layer
+
+Each LLM provider is implemented as a concrete subclass of the `AIService` abstract base class (`services/abc.py`). All providers expose a common interface — `generate_stream()`, `generate()`, `health_check()`, and `validate_key()` — so the orchestration layer needs no provider-specific logic.
+
+| Provider | Env Var | Default Model |
+|---|---|---|
+| Grok (xAI) | `GROK_API_KEY` | `grok-2` |
+| Cerebras | `CEREBRAS_API_KEY` | `gemma-2-9b-it` |
+| Gemini | `GEMINI_API_KEY` | `gemini-2.0-flash` |
+| OpenRouter | `OPENROUTER_API_KEY` | `openai/gpt-3.5-turbo` |
+
+Set `ENABLED_PROVIDERS` to a comma-separated list to activate only a subset of providers.
+
+## Request Flow
+
+The following steps trace a single chat request from client to provider and back:
+
+<Steps>
+  <Step title="Client sends request">
+    The client issues `POST /v1/chat` or `POST /v2/chat` with the `X-API-Key` header and a JSON body.
+  </Step>
+  <Step title="Middleware chain executes">
+    The request traverses the middleware stack: size is checked, the API key is validated and rate-limit counters are updated, security headers are prepared for the response.
+  </Step>
+  <Step title="Endpoint handler parses the body">
+    Pydantic validates the request body against `ChatRequest` (v1) or `ChatRequestV2` (v2). A 422 is returned immediately on validation failure.
+  </Step>
+  <Step title="Provider is selected">
+    If `provider` is set in the request body, `registry.get_service(provider)` is called. Otherwise, `registry.get_next_round_robin()` picks the next available provider in order.
+  </Step>
+  <Step title="Circuit breaker is checked">
+    The circuit breaker for the selected provider is inspected. If its state is `OPEN`, the gateway returns HTTP 503 without contacting the provider.
+  </Step>
+  <Step title="Provider is called">
+    The gateway calls `service.generate_stream(messages)` (or `generate()` for no-stream endpoints). The response is streamed back to the client as server-sent events.
+  </Step>
+  <Step title="Result is recorded">
+    On success, `registry.record_success(service_name)` is called, which may transition an OPEN or HALF_OPEN circuit to CLOSED. On failure, `registry.record_failure(service_name)` increments the failure counter and may open the circuit.
+  </Step>
+  <Step title="Response is returned">
+    The client receives a 200 streaming response, or one of 400 / 401 / 422 / 429 / 503 on error.
+  </Step>
+</Steps>
+
+## Related Concepts
+
+<CardGroup cols={2}>
+  <Card title="Load Balancing" icon="scale-balanced" href="/concepts/load-balancing">
+    How Round Robin distributes requests evenly across available providers and handles provider eligibility.
+  </Card>
+  <Card title="Circuit Breaker" icon="circle-half-stroke" href="/concepts/circuit-breaker">
+    How the gateway detects failing or slow providers and prevents cascading failures across the system.
+  </Card>
+</CardGroup>

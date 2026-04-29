@@ -1,0 +1,173 @@
+---
+title: "Configure LLM providers for the AI Balancer gateway"
+description: "Set up Grok, Cerebras, Gemini, and OpenRouter in AI Balancer with API keys, base URLs, model defaults, and instructions to enable or disable each provider."
+---
+
+AI Balancer supports four LLM providers out of the box: Grok (xAI), Cerebras, Google Gemini, and OpenRouter. At startup, the gateway runs auto-discovery — it scans all registered provider adapters, validates each API key, and adds only the providers that authenticate successfully to the active pool. Providers that fail validation are logged and skipped; the rest are immediately available for Round Robin load balancing.
+
+<Note>
+At least one provider must be configured with a valid API key before the gateway can serve chat requests. If no providers register successfully, the server starts but returns `503 Service Unavailable` on all chat endpoints.
+</Note>
+
+## How auto-discovery works
+
+You don't need to explicitly register providers in code. The `core/discovery.py` module automatically finds every service adapter in the `services/` directory and attempts to validate its API key during the startup lifecycle. The sequence is:
+
+1. All service adapters are instantiated.
+2. Each adapter calls its `validate_key()` method, which makes a lightweight authenticated request to the provider's API.
+3. Adapters that return a valid response are added to the `ServiceRegistry`.
+4. Adapters with invalid keys (HTTP 401/403) are logged as errors and excluded.
+5. The list of active providers is logged: `Proveedores registrados: [...]`.
+
+You can verify which providers are active at any time by calling `GET /v1/providers`.
+
+```bash
+curl http://localhost:8000/v1/providers \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
+## Provider reference
+
+<Tabs>
+  <Tab title="Grok (xAI)">
+    Grok is xAI's language model, accessed through the OpenAI-compatible API at `https://api.x.ai/v1`.
+
+    **Environment variables**
+
+    | Variable | Default |
+    |---|---|
+    | `GROK_API_KEY` | — (required to activate) |
+    | `GROK_MODEL_ID` | `grok-2` |
+    | `GROK_BASE_URL` | `https://api.x.ai/v1` |
+
+    **Minimal `.env` configuration**
+
+    ```bash
+    GROK_API_KEY=xai-your-key-here
+    # GROK_MODEL_ID=grok-2  # optional, this is the default
+    ```
+
+    **Circuit Breaker defaults for Grok**
+
+    | Setting | Value |
+    |---|---|
+    | Failure threshold | 3 failures |
+    | Recovery timeout | 30 seconds |
+    | Half-open max calls | 1 |
+
+    Get your API key at [x.ai](https://x.ai).
+  </Tab>
+  <Tab title="Cerebras">
+    Cerebras provides fast inference using their wafer-scale chip architecture. The endpoint is OpenAI-compatible.
+
+    **Environment variables**
+
+    | Variable | Default |
+    |---|---|
+    | `CEREBRAS_API_KEY` | — (required to activate) |
+    | `CEREBRAS_MODEL_ID` | `gemma-2-9b-it` |
+    | `CEREBRAS_BASE_URL` | `https://api.cerebras.ai/v1` |
+
+    **Minimal `.env` configuration**
+
+    ```bash
+    CEREBRAS_API_KEY=your-cerebras-key-here
+    # CEREBRAS_MODEL_ID=gemma-2-9b-it  # optional, this is the default
+    ```
+
+    **Circuit Breaker defaults for Cerebras**
+
+    | Setting | Value |
+    |---|---|
+    | Failure threshold | 3 failures |
+    | Recovery timeout | 30 seconds |
+    | Half-open max calls | 1 |
+
+    Get your API key at [cloud.cerebras.ai](https://cloud.cerebras.ai).
+  </Tab>
+  <Tab title="Gemini">
+    Google Gemini is accessed through the Generative Language API. The gateway uses the `v1beta` endpoint to support the latest Gemini models.
+
+    **Environment variables**
+
+    | Variable | Default |
+    |---|---|
+    | `GEMINI_API_KEY` | — (required to activate) |
+    | `GEMINI_MODEL_ID` | `gemini-2.0-flash` |
+    | `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta` |
+
+    **Minimal `.env` configuration**
+
+    ```bash
+    GEMINI_API_KEY=your-google-ai-key-here
+    # GEMINI_MODEL_ID=gemini-2.0-flash  # optional, this is the default
+    ```
+
+    **Circuit Breaker defaults for Gemini**
+
+    Gemini is configured with a more tolerant circuit breaker to account for its occasionally higher latency profile.
+
+    | Setting | Value |
+    |---|---|
+    | Failure threshold | 5 failures |
+    | Recovery timeout | 60 seconds |
+    | Half-open max calls | 2 |
+
+    Get your API key at [aistudio.google.com](https://aistudio.google.com/app/apikey).
+  </Tab>
+  <Tab title="OpenRouter">
+    OpenRouter is a unified API that proxies requests to dozens of models from Anthropic, OpenAI, Meta, Mistral, and others. Setting `OPENROUTER_MODEL_ID` lets you route to any model OpenRouter supports.
+
+    **Environment variables**
+
+    | Variable | Default |
+    |---|---|
+    | `OPENROUTER_API_KEY` | — (required to activate) |
+    | `OPENROUTER_MODEL_ID` | `openai/gpt-3.5-turbo` |
+    | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` |
+
+    **Minimal `.env` configuration**
+
+    ```bash
+    OPENROUTER_API_KEY=your-openrouter-key-here
+    # OPENROUTER_MODEL_ID=openai/gpt-3.5-turbo  # optional, this is the default
+    ```
+
+    OpenRouter uses a `model_id/model_name` format for model strings. Examples: `anthropic/claude-3-5-sonnet`, `meta-llama/llama-3.1-8b-instruct`.
+
+    **Circuit Breaker defaults for OpenRouter**
+
+    | Setting | Value |
+    |---|---|
+    | Failure threshold | 3 failures |
+    | Recovery timeout | 30 seconds |
+    | Half-open max calls | 1 |
+
+    Get your API key at [openrouter.ai/settings](https://openrouter.ai/settings).
+  </Tab>
+</Tabs>
+
+## Enabling and disabling specific providers
+
+By default, every provider with a valid API key is registered. Use `ENABLED_PROVIDERS` to restrict which providers are active without removing their keys from `.env`:
+
+```bash
+# Enable only Grok and OpenRouter
+ENABLED_PROVIDERS=grok,openrouter
+
+# Enable all providers with valid keys (default behavior)
+ENABLED_PROVIDERS=
+```
+
+Provider names are lowercase and match the values shown in `GET /v1/providers`: `grok`, `cerebras`, `gemini`, `openrouter`.
+
+## What happens when a key is invalid
+
+If a provider's API key fails validation at startup, the gateway:
+
+1. Logs an error with the HTTP status code and reason: `API key inválida para grok: NO REGISTRADO - 401 Unauthorized`.
+2. Skips that provider — it is not added to the registry.
+3. Does not prevent other providers from registering.
+4. Continues serving requests using the remaining valid providers.
+
+To fix a skipped provider, update the key in `.env` and restart the gateway. You can check the current active provider list without restarting by calling `GET /v1/providers`.

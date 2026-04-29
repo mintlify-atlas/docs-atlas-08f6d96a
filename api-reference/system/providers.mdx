@@ -1,0 +1,97 @@
+---
+title: "GET /v1/providers — list available LLM providers"
+description: "Retrieve the full list of registered LLM providers, their current model IDs, and availability status to inform provider selection in chat requests."
+---
+
+The providers endpoint returns a structured list of every LLM provider registered with the AI Balancer gateway, including the model currently configured for each provider and whether that provider is available to accept requests. Use this endpoint to populate provider selection UI, validate a provider name before using it in a chat request, or check which models are active without needing to inspect server configuration files directly.
+
+## Endpoint
+
+```
+GET /v1/providers
+GET /v2/providers
+```
+
+## Authentication
+
+All requests must include a valid API key in the `X-API-Key` header.
+
+```
+X-API-Key: your_api_key_here
+```
+
+## Request
+
+No request body is required for this endpoint.
+
+## Response fields
+
+<ResponseField name="providers" type="array" required>
+  Ordered list of provider objects. Each entry describes a single LLM provider registered with the gateway.
+
+  <Expandable title="provider object">
+    <ResponseField name="name" type="string" required>
+      Unique provider identifier used when specifying a provider in chat requests. One of `"grok"`, `"cerebras"`, `"gemini"`, or `"openrouter"`.
+    </ResponseField>
+    <ResponseField name="model" type="string" required>
+      The model ID currently active for this provider (for example `"grok-2"` or `"gemini-2.0-flash"`). This reflects the server-side configuration and may differ from any model you request explicitly in a v2 chat payload.
+    </ResponseField>
+    <ResponseField name="available" type="boolean" required>
+      Whether this provider can currently accept requests. `true` if reachable and circuit not open, `false` otherwise.
+    </ResponseField>
+    <ResponseField name="circuit_state" type="string" required>
+      Current circuit breaker state for this provider. One of `"closed"`, `"open"`, `"half_open"`, or `"degraded"`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## HTTP status codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | Provider list returned successfully |
+| `401 Unauthorized` | Missing or invalid API key |
+
+## Example request
+
+```bash
+curl -X GET https://your-domain.com/v1/providers \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
+## Example response
+
+```json
+{
+  "providers": [
+    {
+      "name": "grok",
+      "model": "grok-2",
+      "available": true,
+      "circuit_state": "closed"
+    },
+    {
+      "name": "cerebras",
+      "model": "gemma-2-9b-it",
+      "available": true,
+      "circuit_state": "closed"
+    },
+    {
+      "name": "gemini",
+      "model": "gemini-2.0-flash",
+      "available": true,
+      "circuit_state": "closed"
+    },
+    {
+      "name": "openrouter",
+      "model": "openai/gpt-3.5-turbo",
+      "available": true,
+      "circuit_state": "closed"
+    }
+  ]
+}
+```
+
+<Tip>
+  Pass the `name` value from this response as the `provider` field in your `/v1/chat` or `/v2/chat` request body to target a specific provider rather than relying on the gateway's automatic load-balancing selection.
+</Tip>

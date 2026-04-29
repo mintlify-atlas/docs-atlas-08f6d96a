@@ -1,0 +1,164 @@
+---
+title: "Circuit Breaker: Resilient Provider Fault Tolerance"
+description: "How AI Balancer's Circuit Breaker protects against cascading failures: four states, transition rules, per-provider thresholds, and manual reset via API."
+---
+
+The Circuit Breaker is a resilience pattern that prevents a slow or unavailable LLM provider from degrading your entire application. Instead of allowing every request to wait for a provider that has already started failing — and potentially exhausting connection pools or timing out callers — the circuit breaker monitors each provider's health and, once failures exceed a threshold, "opens" the circuit so that subsequent requests fail immediately with a clear error rather than hanging. After a configurable recovery window, the circuit enters a test phase, and if the provider responds successfully, normal operation resumes automatically.
+
+AI Balancer implements two circuit breaker variants: a base `CircuitBreaker` (`core/circuit_breaker.py`) and an `AdaptiveCircuitBreaker` that also considers response latency alongside hard failures.
+
+## Why It Matters
+
+Without a circuit breaker, a single failing provider causes every request that lands on it to time out, occupying threads and degrading latency for all users. With a circuit breaker, the system detects the failure quickly, removes the provider from the [Round Robin pool](/concepts/load-balancing), and lets the remaining healthy providers absorb the traffic. When the failing provider recovers, it is automatically reintroduced — no manual intervention required.
+
+## The Four States
+
+```
+        ┌─────────────┐
+        │   CLOSED    │  Normal operation — all requests pass
+        └──────┬──────┘
+               │ failure_count >= threshold
+               ▼
+        ┌─────────────┐
+        │    OPEN     │  Provider failing — all requests blocked (503)
+        └──────┬──────┘
+               │ recovery_timeout elapsed
+               ▼
+        ┌─────────────┐
+        │  HALF_OPEN  │  Testing recovery — limited requests allowed
+        └──────┬──────┘
+               │ success
+               ▼
+        ┌─────────────┐
+        │   CLOSED    │  Recovered — back to normal operation
+        └─────────────┘
+
+  CLOSED ──────────────────────────────► DEGRADED
+  (3+ high-latency requests)             │
+                                         │ error_rate > 50%
+                                         ▼
+                                        OPEN
+```
+
+### CLOSED
+
+This is the default starting state. All requests pass through to the provider. Each failure increments a counter; each success resets it. When the failure count reaches the configured threshold, the circuit opens.
+
+### OPEN
+
+The provider has exceeded its failure threshold. No requests are forwarded — the gateway returns **HTTP 503** immediately, protecting the rest of the system from the failing dependency. The circuit stays open until the `recovery_timeout` elapses.
+
+### HALF_OPEN
+
+After `recovery_timeout` seconds, the circuit transitions to HALF_OPEN and allows a small number of test requests through (`half_open_max_calls`). If a test request succeeds, the circuit closes and normal operation resumes. If it fails, the circuit opens again and the timeout resets.
+
+### DEGRADED
+
+Unique to the `AdaptiveCircuitBreaker`. When three or more requests complete successfully but with latency above `CB_LATENCY_THRESHOLD_MS` (default 5000 ms), the circuit moves to DEGRADED. Requests still pass, but the provider is flagged as slow. If the error rate within the sliding window then exceeds 50%, the circuit opens fully.
+
+## State Transition Rules
+
+| From | Condition | To |
+|---|---|---|
+| `CLOSED` | `failure_count >= failure_threshold` | `OPEN` |
+| `CLOSED` | 3+ high-latency requests (adaptive) | `DEGRADED` |
+| `OPEN` | `recovery_timeout` elapsed | `HALF_OPEN` |
+| `HALF_OPEN` | Successful test request | `CLOSED` |
+| `HALF_OPEN` | Any failure | `OPEN` |
+| `DEGRADED` | `error_rate > 50%` in sliding window | `OPEN` |
+| `DEGRADED` | No high-latency requests for `degraded_recovery_time` | `CLOSED` |
+
+## Per-Provider Configuration
+
+Each provider has its own `CircuitConfig` defined in `app/config.py`, allowing you to tune thresholds to match each backend's reliability characteristics:
+
+```python
+CIRCUIT_CONFIGS: dict[str, CircuitConfig] = {
+    "grok": CircuitConfig(
+        failure_threshold=3,       # Opens after 3 consecutive failures
+        recovery_timeout=30.0,     # Tries recovery after 30 seconds
+        half_open_max_calls=1      # 1 test call in HALF_OPEN
+    ),
+    "cerebras": CircuitConfig(
+        failure_threshold=3,
+        recovery_timeout=30.0,
+        half_open_max_calls=1
+    ),
+    "gemini": CircuitConfig(
+        failure_threshold=5,       # More tolerant — opens after 5 failures
+        recovery_timeout=60.0,     # Longer recovery window
+        half_open_max_calls=2      # 2 test calls before confirming recovery
+    ),
+    "openrouter": CircuitConfig(
+        failure_threshold=3,
+        recovery_timeout=30.0,
+        half_open_max_calls=1
+    ),
+}
+```
+
+## Environment Variable Configuration
+
+The `AdaptiveCircuitBreaker` reads its defaults from environment variables, making it easy to tune without code changes:
+
+| Variable | Default | Description |
+|---|---|---|
+| `CB_FAILURE_THRESHOLD` | `3` | Failures before opening the circuit |
+| `CB_FAILURE_TIMEOUT` | `30.0` | Seconds before attempting recovery (HALF_OPEN) |
+| `CB_LATENCY_THRESHOLD_MS` | `5000.0` | Latency (ms) considered "high" |
+| `CB_LATENCY_THRESHOLD_COUNT` | `3` | Number of high-latency requests before DEGRADED |
+| `CB_ERROR_RATE_THRESHOLD` | `0.5` | Error rate (50%) that triggers OPEN from DEGRADED |
+| `CB_HALF_OPEN_MAX_CALLS` | `3` | Test calls allowed in HALF_OPEN |
+| `CB_SLIDING_WINDOW_SIZE` | `10` | Number of recent requests used to calculate error rate |
+| `CB_DEGRADED_RECOVERY_TIME` | `30.0` | Seconds without high latency before exiting DEGRADED |
+
+## Checking Circuit Breaker Status
+
+Query the current state of all circuit breakers without authentication overhead:
+
+```bash
+curl -X GET http://localhost:8000/v1/circuit-breaker \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
+Example response:
+
+```json
+{
+  "circuits": {
+    "grok": {
+      "service": "grok",
+      "state": "closed",
+      "failure_count": 0,
+      "success_count": 12,
+      "last_failure_time": 0.0,
+      "half_open_calls": 0
+    },
+    "gemini": {
+      "service": "gemini",
+      "state": "open",
+      "failure_count": 5,
+      "success_count": 0,
+      "last_failure_time": 1714390800.123,
+      "half_open_calls": 0
+    }
+  }
+}
+```
+
+The same endpoint is available at `/v2/circuit-breaker`.
+
+## Manually Resetting a Circuit Breaker
+
+If you have resolved the underlying cause of a provider failure and want to restore it immediately without waiting for the recovery timeout:
+
+```bash
+curl -X POST http://localhost:8000/v1/circuit-breaker/gemini/reset \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
+Replace `gemini` with the provider name you want to reset (`grok`, `cerebras`, or `openrouter`). The circuit transitions directly to `CLOSED` and the provider rejoins the Round Robin pool on the next request.
+
+<Warning>
+If all circuit breakers are simultaneously in the `OPEN` state, the gateway has no available providers and returns **HTTP 503 Service Unavailable** for every chat request. This situation can arise during a widespread outage or if thresholds are set too aggressively. Use `GET /v1/circuit-breaker` to identify which providers are open, resolve the root cause, and reset them individually using the reset endpoint above.
+</Warning>

@@ -1,0 +1,131 @@
+---
+title: "Security Features and Best Practices for the Gateway"
+description: "Security controls in AI Balancer: automatic security headers, CORS config, 1 MB size limit, HTTPS redirect, per-key rate limiting, and SHA-256 key hashing."
+---
+
+The AI Balancer gateway is designed with security as a default rather than an afterthought. Every response automatically includes a set of protective HTTP headers, all incoming requests are validated for size and authenticated before reaching any endpoint, and API keys are stored only as SHA-256 hashes — never in plaintext. This guide walks through each security control and the configuration options available to tighten them for production deployments.
+
+## Automatic security headers
+
+Every response from the gateway — regardless of endpoint or API version — includes the following headers. No configuration is required.
+
+| Header | Value | Purpose |
+|---|---|---|
+| `X-Frame-Options` | `DENY` | Prevents the page from being embedded in a `<frame>` or `<iframe>`, blocking clickjacking attacks |
+| `X-Content-Type-Options` | `nosniff` | Stops browsers from MIME-sniffing the content type away from the declared value |
+| `Content-Security-Policy` | Restrictive policy | Limits which external resources can be loaded, reducing XSS attack surface |
+| `Cache-Control` | `no-store` | Prevents sensitive response data from being stored in browser or proxy caches |
+
+These headers are injected by the gateway's security middleware and cannot be overridden by the upstream provider response.
+
+## CORS configuration
+
+By default, the gateway only accepts cross-origin requests from `localhost` origins. This safe default means a freshly deployed instance cannot be called from an arbitrary external website without explicit configuration.
+
+Set allowed origins using the `CORS_ALLOWED_ORIGINS` environment variable as a comma-separated list:
+
+```bash
+# Allow only your production frontend
+CORS_ALLOWED_ORIGINS=https://app.example.com
+
+# Allow multiple origins
+CORS_ALLOWED_ORIGINS=https://app.example.com,https://admin.example.com
+```
+
+<Warning>
+  Never set `CORS_ALLOWED_ORIGINS` to a wildcard (`*`) in production. Doing so allows any website to make authenticated requests to the gateway using a visitor's credentials. Always enumerate the specific origins that require access.
+</Warning>
+
+## Request size limit
+
+The gateway rejects any request body larger than **1 MB** before it reaches endpoint logic. Oversized requests receive a `413 Request Entity Too Large` response immediately.
+
+```json
+{
+  "detail": "Request too large. Max 1MB allowed."
+}
+```
+
+This limit prevents memory exhaustion attacks that would otherwise be possible by sending a single extremely large payload to a streaming endpoint that buffers input before calling the upstream provider.
+
+## HTTPS redirect
+
+In production, enable automatic HTTP-to-HTTPS redirection by setting `PRODUCTION_MODE=true` in your `.env` file. Any HTTP request will be redirected to its HTTPS equivalent with a `301` permanent redirect.
+
+```bash
+PRODUCTION_MODE=true
+```
+
+<Tip>
+  Always enable `PRODUCTION_MODE=true` when deploying the gateway with a public-facing domain. Without it, API keys can be transmitted over unencrypted connections and intercepted by anyone with access to network traffic between the client and server.
+</Tip>
+
+## Rate limiting
+
+The gateway enforces per-client rate limits to prevent abuse and protect upstream provider quotas. Limits are applied per API key.
+
+| Endpoint | Default limit |
+|---|---|
+| `POST /v1/chat` | 100 requests / minute |
+| `POST /v2/chat` | 100 requests / minute |
+| `POST /v1/batch/chat` | 5 requests / minute |
+
+When a client exceeds their limit, the gateway responds with `429 Too Many Requests`:
+
+```json
+{
+  "detail": "Rate limit exceeded",
+  "limit": "100/minute",
+  "remaining": 0,
+  "reset": "2026-04-29T10:31:00Z"
+}
+```
+
+You can configure a custom rate limit for each API key at creation time:
+
+```bash
+curl -X POST http://localhost:8000/admin/keys \
+  -H "X-API-Key: YOUR_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "high-volume-client", "rate_limit": 500}'
+```
+
+## API key security
+
+<Steps>
+  <Step title="Keys are hashed before storage">
+    When an API key is created, the gateway immediately computes its SHA-256 hash and stores only the hash — never the plaintext key. The storage file contains the hash alongside a short prefix and metadata, so even with direct file system access an attacker cannot recover the original key value.
+  </Step>
+  <Step title="Keys are shown exactly once">
+    The full key is returned only in the creation response. After that, it cannot be retrieved through any API endpoint. If a key is lost, it must be revoked and a new one created.
+
+    ```json
+    {
+      "api_key": "sk-abc123...",
+      "name": "my-app",
+      "rate_limit": 100,
+      "message": "Save this key - it cannot be recovered later"
+    }
+    ```
+  </Step>
+  <Step title="Keys can only be deleted by their owner">
+    A client key can be deleted either by the user who created it or by an admin key (`is_admin: true`). Attempting to delete another user's key returns `403 Forbidden`. This ownership model prevents one compromised client key from being used to revoke other clients' access.
+  </Step>
+</Steps>
+
+## Security checklist for production
+
+<CardGroup cols={2}>
+  <Card title="Enable HTTPS" icon="lock">
+    Set `PRODUCTION_MODE=true` and terminate TLS at your load balancer or reverse proxy. Never expose the gateway on HTTP in production.
+  </Card>
+  <Card title="Restrict CORS origins" icon="globe">
+    Set `CORS_ALLOWED_ORIGINS` to only the specific domains that need access. Remove any localhost entries from production configuration.
+  </Card>
+  <Card title="Rotate compromised keys immediately" icon="arrows-rotate">
+    Use `DELETE /admin/keys/{name}` to revoke a key as soon as it is suspected to be compromised, then issue a new one via `POST /admin/keys`.
+  </Card>
+  <Card title="Use separate keys per client" icon="key">
+    Issue a distinct API key to each application or team. This limits blast radius if a key is leaked and gives you precise control over per-client rate limits.
+  </Card>
+</CardGroup>

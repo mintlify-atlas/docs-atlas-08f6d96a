@@ -1,0 +1,111 @@
+---
+title: "POST /admin/keys — create a new API key"
+description: "Create a client or admin API key with a custom name and rate limit. The full key is returned once at creation time and cannot be recovered if lost."
+---
+
+The create key endpoint provisions a new API key for a client or administrator. You supply a unique name to identify the key holder, an optional per-minute rate limit, and an optional flag to grant admin privileges. The server responds with the generated key value in plain text — this is the only time the full key is visible. The system stores only a hash, so if the key is lost a new one must be created and the old one revoked.
+
+<Warning>
+  The `api_key` value in the response is shown **exactly once**. Store it in a secure secrets manager immediately. There is no way to recover a lost key — you must revoke the old key and create a replacement.
+</Warning>
+
+## Endpoint
+
+```
+POST /admin/keys
+```
+
+## Authentication
+
+Requires an admin API key in the `X-API-Key` header. Regular (non-admin) API keys cannot create new keys.
+
+```
+X-API-Key: YOUR_ADMIN_KEY
+```
+
+## Request body
+
+<ParamField body="name" type="string" required>
+  Unique identifier for the API key. Used to reference the key in list and revoke operations. Cannot be empty or whitespace. Whitespace is automatically trimmed from both ends.
+</ParamField>
+
+<ParamField body="rate_limit" type="integer">
+  Maximum number of requests per minute allowed for this key. Defaults to `100` if not specified. Applies to all chat endpoints.
+</ParamField>
+
+<ParamField body="is_admin" type="boolean">
+  When `true`, the new key has admin privileges: it can create additional keys, list all keys, and revoke any key (not just its own). Defaults to `false`.
+</ParamField>
+
+## Response fields (200 OK)
+
+<ResponseField name="api_key" type="string" required>
+  The generated API key value. This is the full plain-text key and is only returned in this response. Copy and store it immediately.
+</ResponseField>
+
+<ResponseField name="name" type="string" required>
+  The name assigned to the key, as provided in the request.
+</ResponseField>
+
+<ResponseField name="rate_limit" type="integer" required>
+  The rate limit applied to this key, in requests per minute.
+</ResponseField>
+
+<ResponseField name="is_admin" type="boolean" required>
+  Whether this key has admin privileges.
+</ResponseField>
+
+<ResponseField name="message" type="string" required>
+  A reminder that the key cannot be recovered. The value is `"Guarda esta key - no se puede recuperar después"`.
+</ResponseField>
+
+## HTTP status codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | Key created successfully |
+| `401 Unauthorized` | Missing or invalid API key in the request header |
+| `422 Unprocessable Entity` | Validation error — for example, `name` is empty |
+
+## Example requests
+
+**Create a standard client key**
+
+```bash
+curl -X POST https://your-domain.com/admin/keys \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: YOUR_ADMIN_KEY" \
+  -d '{
+    "name": "my-client-app",
+    "rate_limit": 100
+  }'
+```
+
+**Create an admin key**
+
+```bash
+curl -X POST https://your-domain.com/admin/keys \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: YOUR_ADMIN_KEY" \
+  -d '{
+    "name": "ops-admin",
+    "rate_limit": 1000,
+    "is_admin": true
+  }'
+```
+
+## Example response
+
+```json
+{
+  "api_key": "sk-abc123xyz...",
+  "name": "my-client-app",
+  "rate_limit": 100,
+  "is_admin": false,
+  "message": "Guarda esta key - no se puede recuperar después"
+}
+```
+
+<Note>
+  On first server start, an initial admin key is automatically generated and printed to the console. It is also saved to `data/.admin_key`. Use this bootstrap key to create all subsequent keys.
+</Note>

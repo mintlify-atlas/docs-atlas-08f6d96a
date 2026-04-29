@@ -1,0 +1,147 @@
+---
+title: "API Versioning: Choosing Between v1 and v2"
+description: "Compare AI Balancer's v1 OpenAI-style messages API and the v2 prompt-based API with system prompts, model selection, and advanced generation options."
+---
+
+AI Balancer exposes two versioned API namespaces that offer different request formats and capability sets. Version 1 mirrors the OpenAI messages array format, making it easy to migrate existing integrations or use client libraries that already speak that protocol. Version 2 introduces a simpler `prompt` string model alongside a dedicated `system_prompt` field, explicit model selection, and a rich `options` object for fine-grained control over generation parameters. Both versions route through the same service registry, load balancer, and circuit breaker infrastructure — the difference is entirely in the request contract.
+
+## Feature Comparison
+
+| Feature | v1 | v2 |
+|---|---|---|
+| Request format | `messages` array (role + content) | `prompt` string |
+| System prompt | Via `{"role": "system", "content": "..."}` message | Dedicated `system_prompt` field |
+| Model selection | No | `model` field |
+| Provider pinning | `provider` field | `provider` field |
+| Temperature | No | `options.temperature` (0–2, default 0.7) |
+| Max tokens | No | `options.max_tokens` (1–32000, default 4096) |
+| Top-p sampling | No | `options.top_p` (0–1, default 1.0) |
+| Response format | No | `options.response_format` (`"text"` or `"json"`) |
+| Reproducibility seed | No | `options.seed` |
+| Stop sequences | No | `options.stop` |
+| Streaming endpoint | `POST /v1/chat` | `POST /v2/chat` |
+| Non-streaming endpoint | `POST /v1/chat/no-stream` | `POST /v2/chat/no-stream` |
+
+## v1 API
+
+The v1 API accepts an OpenAI-style `messages` array where each element has a `role` (`"user"`, `"assistant"`, or `"system"`) and a `content` string. Requests support 1–50 messages, each up to 10,000 characters.
+
+```python
+class Message(BaseModel):
+    role: Literal["user", "assistant", "system"]
+    content: str  # 1–10,000 characters
+
+class ChatRequest(BaseModel):
+    messages: list[Message]  # 1–50 messages
+    provider: str | None     # Optional: "grok", "cerebras", "gemini", "openrouter"
+```
+
+**Endpoints:**
+- `POST /v1/chat` — Streaming response (server-sent events)
+- `POST /v1/chat/no-stream` — Blocking response with full JSON body
+
+## v2 API
+
+The v2 API uses a single `prompt` string as the user message, with an optional `system_prompt` for custom instructions. Advanced generation parameters are grouped under an `options` object with sensible defaults so you only need to specify what you want to override.
+
+```python
+class ChatOptions(BaseModel):
+    temperature: float = 0.7    # Sampling temperature (0–2)
+    max_tokens: int = 4096      # Maximum tokens to generate (1–32,000)
+    top_p: float = 1.0          # Nucleus sampling threshold (0–1)
+    response_format: str = "text"  # "text" or "json"
+    seed: int | None = None     # Seed for reproducible outputs
+    stop: list[str] = []        # Stop sequences
+
+class ChatRequestV2(BaseModel):
+    prompt: str                 # User message (required, 1–10,000 chars)
+    system_prompt: str | None   # Custom instructions (up to 5,000 chars)
+    model: str | None           # Specific model identifier
+    provider: str | None        # Specific provider name
+    options: ChatOptions        # Advanced generation options
+```
+
+**Endpoints:**
+- `POST /v2/chat` — Streaming response (server-sent events)
+- `POST /v2/chat/no-stream` — Blocking response with full JSON body
+
+## Request Examples
+
+<Tabs>
+  <Tab title="v1 — Streaming">
+    ```bash
+    curl -X POST http://localhost:8000/v1/chat \
+      -H "X-API-Key: YOUR_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "messages": [
+          {"role": "user", "content": "Explain the Raft consensus algorithm"}
+        ]
+      }'
+    ```
+  </Tab>
+  <Tab title="v1 — No Stream">
+    ```bash
+    curl -X POST http://localhost:8000/v1/chat/no-stream \
+      -H "X-API-Key: YOUR_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "messages": [
+          {"role": "system", "content": "You are a concise technical writer."},
+          {"role": "user", "content": "What is a circuit breaker pattern?"}
+        ],
+        "provider": "grok"
+      }'
+    ```
+  </Tab>
+  <Tab title="v2 — Streaming">
+    ```bash
+    curl -X POST http://localhost:8000/v2/chat \
+      -H "X-API-Key: YOUR_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "prompt": "Explain the Raft consensus algorithm",
+        "system_prompt": "You are a concise technical writer.",
+        "options": {
+          "temperature": 0.5,
+          "max_tokens": 800
+        }
+      }'
+    ```
+  </Tab>
+  <Tab title="v2 — No Stream">
+    ```bash
+    curl -X POST http://localhost:8000/v2/chat/no-stream \
+      -H "X-API-Key: YOUR_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "prompt": "Generate a JSON object describing a REST API endpoint",
+        "system_prompt": "Respond only with valid JSON, no prose.",
+        "provider": "gemini",
+        "options": {
+          "temperature": 0.2,
+          "max_tokens": 512,
+          "response_format": "json",
+          "seed": 42
+        }
+      }'
+    ```
+  </Tab>
+</Tabs>
+
+## When to Use Each Version
+
+**Use v1 when:**
+- You have an existing OpenAI-compatible client that constructs `messages` arrays and you want zero-friction integration.
+- You need to pass a multi-turn conversation history with explicit `assistant` turns.
+- You are prototyping or running quick tests with `curl` using the familiar messages format.
+
+**Use v2 when:**
+- You want to control generation quality with temperature, top-p, or max_tokens without wrapping everything in messages.
+- You need a `system_prompt` field that is clearly separated from the user turn — easier to read and template.
+- You want reproducible outputs using a `seed`, or structured JSON output via `response_format: "json"`.
+- You need to target a specific model (not just a provider) using the `model` field.
+
+<Note>
+Both v1 and v2 share the same underlying provider pool, Round Robin load balancer, and circuit breaker infrastructure. Choosing a version affects only the request and response schema — not which providers are available, how traffic is distributed, or how failures are handled.
+</Note>

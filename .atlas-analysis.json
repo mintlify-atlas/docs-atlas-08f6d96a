@@ -1,23 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "AI Balancer API Gateway",
+  "projectType": "api-service",
+  "projectName": "AI Balancer API Gateway",
+  "projectDescription": "A centralized FastAPI-based API gateway that provides unified access to multiple LLM providers (Grok, Cerebras, Gemini, OpenRouter) with Round Robin load balancing, Circuit Breaker fault tolerance, and API key management.",
   "theme": "luma",
-  "colors": {
-    "primary": "#94cb04",
-    "light": "#545454"
-  },
-  "favicon": "https://media.brand.dev/288cc7c4-5cef-4376-950b-bdf0083eedae.png",
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/Pyhton-Lab/api-gateway-ai"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/Pyhton-Lab/api-gateway-ai"
-    }
-  },
+  "primaryColor": "#94cb04",
+  "lightColor": "#545454",
+  "darkColor": null,
   "navigation": {
     "tabs": [
       {
@@ -98,5 +86,36 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "Unified API interface for Grok, Cerebras, Gemini, and OpenRouter LLM providers",
+    "Round Robin load balancing with automatic provider selection",
+    "Adaptive Circuit Breaker with closed/degraded/open/half-open states",
+    "Dual API versioning: v1 (OpenAI-style messages) and v2 (advanced prompt options)",
+    "Real-time streaming responses via Server-Sent Events",
+    "Batch processing for multiple concurrent requests",
+    "API key management with SHA-256 hashing and admin ownership controls",
+    "Per-client rate limiting with configurable limits",
+    "Prometheus metrics integration for observability",
+    "Security headers, CORS configuration, and HTTPS redirect support"
+  ],
+  "publicApiSurface": [
+    "POST /v1/chat",
+    "POST /v1/chat/no-stream",
+    "POST /v2/chat",
+    "POST /v2/chat/no-stream",
+    "POST /v1/batch/chat",
+    "GET /v1/health",
+    "GET /v2/health",
+    "GET /v1/providers",
+    "GET /v2/providers",
+    "GET /v1/metrics",
+    "GET /v1/circuit-breaker",
+    "GET /v2/circuit-breaker",
+    "POST /v1/circuit-breaker/{provider}/reset",
+    "POST /v2/circuit-breaker/{provider}/reset",
+    "POST /admin/keys",
+    "GET /admin/keys",
+    "DELETE /admin/keys/{name}"
+  ]
 }

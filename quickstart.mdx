@@ -1,81 +1,217 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
-icon: 'rocket'
+title: "Get started with AI Balancer API Gateway in minutes"
+description: "Install AI Balancer, configure provider API keys, start the server, and send your first authenticated LLM chat request in under 10 minutes."
 ---
 
-## Get started in three steps
+This guide walks you through everything you need to run AI Balancer locally and send your first request. By the end you will have the gateway running, an admin API key saved, a client key created, and a successful response from one of the configured LLM providers.
 
-Get your documentation site running locally and make your first customization.
+<Steps>
+  <Step title="Prerequisites">
+    Before you begin, make sure you have the following installed:
 
-### Step 1: Set up your local environment
+    - **Python 3.11 or later** — check with `python --version`
+    - **pip** — bundled with Python 3.11+; check with `pip --version`
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    You will also need at least one LLM provider API key. AI Balancer supports:
 
-### Step 2: Deploy your changes
+    | Provider | Where to get a key |
+    |---|---|
+    | Grok (xAI) | [console.x.ai](https://console.x.ai) |
+    | Cerebras | [cloud.cerebras.ai](https://cloud.cerebras.ai) |
+    | Gemini | [aistudio.google.com](https://aistudio.google.com) |
+    | OpenRouter | [openrouter.ai/keys](https://openrouter.ai/keys) |
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    Providers without a valid API key are skipped automatically at startup, so you only need keys for the providers you intend to use.
+  </Step>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+  <Step title="Clone and install">
+    Clone the repository and install the Python dependencies into a virtual environment:
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+    ```bash
+    git clone https://github.com/Pyhton-Lab/api-gateway-ai.git
+    cd api-gateway-ai
 
-### Step 3: Go live
+    python -m venv venv
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    # Linux / macOS
+    source venv/bin/activate
+
+    # Windows
+    venv\Scripts\activate
+
+    pip install -r requirements.txt
+    ```
+
+    The main runtime dependencies are FastAPI, Uvicorn, aiohttp, pydantic, slowapi, and prometheus-client.
+  </Step>
+
+  <Step title="Configure environment variables">
+    Copy the example environment file and fill in your provider API keys:
+
+    ```bash
+    cp .env.example .env
+    ```
+
+    Open `.env` in your editor and set the keys for every provider you want to use:
+
+    ```bash
+    # Provider API keys — add keys only for providers you want to enable
+    GROK_API_KEY=your_grok_api_key_here
+    GROK_MODEL_ID=grok-2
+
+    CEREBRAS_API_KEY=your_cerebras_api_key_here
+    CEREBRAS_MODEL_ID=gemma-2-9b-it
+
+    GEMINI_API_KEY=your_gemini_api_key_here
+    GEMINI_MODEL_ID=gemini-2.0-flash
+
+    OPENROUTER_API_KEY=your_openrouter_api_key_here
+    OPENROUTER_MODEL_ID=openai/gpt-4o-mini
+
+    # Optional: restrict to specific providers (comma-separated)
+    # Leave empty to enable all providers with valid keys
+    ENABLED_PROVIDERS=
+
+    # Server settings
+    HOST=0.0.0.0
+    PORT=8000
+    LOG_LEVEL=INFO
+
+    # Set to true when running behind a TLS terminator
+    PRODUCTION_MODE=false
+
+    # CORS — comma-separated list of allowed origins
+    CORS_ALLOWED_ORIGINS=http://localhost:3000
+    ```
+
+    To enable only a subset of providers, set `ENABLED_PROVIDERS` to a comma-separated list:
+
+    ```bash
+    # Enable only Grok and Cerebras
+    ENABLED_PROVIDERS=grok,cerebras
+    ```
+  </Step>
+
+  <Step title="Start the server">
+    Run the gateway with:
+
+    ```bash
+    python main.py
+    ```
+
+    The server starts on `http://localhost:8000` by default. At startup, it validates each configured provider key and registers only those that respond successfully:
+
+    ```
+    [2026-04-29 10:00:01] [INFO] [system] Proveedor habilitado: grok
+    [2026-04-29 10:00:02] [INFO] [system] Proveedor habilitado: cerebras
+    [2026-04-29 10:00:02] [INFO] [system] Proveedores registrados: ['grok', 'cerebras']
+    ```
+  </Step>
+
+  <Step title="Save your admin API key">
+    On the very first startup, AI Balancer generates an admin API key and prints it to the console:
+
+    ```
+    [INFO] [system] ⚠️ ADMIN API KEY: a1b2c3d4e5f6... ⚠️ (SAVE IT - only shown once)
+    ```
+
+    <Note>
+      Copy this key immediately and store it in a secure location such as a password manager or secrets vault. The full key is never shown again — only a SHA-256 hash is stored on disk. If you lose the admin key you will need to delete `data/api_keys.json` and restart the server to generate a new one.
+    </Note>
+
+    On subsequent restarts the admin key is not reprinted. The `data/.admin_key` file acts as a recovery marker but does not contain the full plaintext key.
+  </Step>
+
+  <Step title="Create a client API key">
+    Use your admin key to create a client key for your application. Client keys have a configurable rate limit and do not have admin privileges by default.
+
+    ```bash
+    curl -X POST http://localhost:8000/admin/keys \
+      -H "Content-Type: application/json" \
+      -H "X-API-Key: YOUR_ADMIN_KEY" \
+      -d '{"name": "my-app", "rate_limit": 100}'
+    ```
+
+    The response includes the full API key — this is the only time it is returned:
+
+    ```json
+    {
+      "api_key": "9f3c1a2b8d7e4f5a6b0c3d2e1f4a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a",
+      "name": "my-app",
+      "rate_limit": 100,
+      "is_admin": false,
+      "message": "Guarda esta key - no se puede recuperar despu\u00e9s"
+    }
+    ```
+
+    Save the `api_key` value. You will pass it in the `X-API-Key` header on every subsequent request. For details on key types and permissions, see [Authentication](/authentication).
+  </Step>
+
+  <Step title="Send your first chat request">
+    Send a chat completion request using API v1 (OpenAI-style message format):
+
+    ```bash
+    curl -X POST http://localhost:8000/v1/chat \
+      -H "X-API-Key: YOUR_CLIENT_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "messages": [
+          {"role": "user", "content": "What is the capital of France?"}
+        ]
+      }'
+    ```
+
+    The gateway streams the response by default using Server-Sent Events:
+
+    ```
+    data: {"content": "The"}
+    data: {"content": " capital"}
+    data: {"content": " of France is Paris."}
+    data: [DONE]
+    ```
+
+    To receive a complete JSON response instead of a stream, use the no-stream variant:
+
+    ```bash
+    curl -X POST http://localhost:8000/v1/chat/no-stream \
+      -H "X-API-Key: YOUR_CLIENT_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "messages": [
+          {"role": "user", "content": "What is the capital of France?"}
+        ]
+      }'
+    ```
+
+    Example non-streaming response:
+
+    ```json
+    {
+      "content": "The capital of France is Paris.",
+      "provider": {
+        "service": "grok",
+        "model": "grok-2"
+      },
+      "response_time_ms": 1234.5
+    }
+    ```
+
+    You can also pin a request to a specific provider using the `provider` field:
+
+    ```bash
+    curl -X POST http://localhost:8000/v1/chat \
+      -H "X-API-Key: YOUR_CLIENT_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "messages": [{"role": "user", "content": "Hello"}],
+        "provider": "cerebras"
+      }'
+    ```
+  </Step>
+</Steps>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+- **API v2** — Use `/v2/chat` for advanced controls like `system_prompt`, `temperature`, and `max_tokens`. See the [v2 chat reference](/api-reference/chat/v2-chat).
+- **Authentication** — Understand the difference between admin and client keys, rate limiting, and key revocation in [Authentication](/authentication).
+- **Architecture** — Learn how Round Robin load balancing and the Circuit Breaker work together in [Architecture](/concepts/architecture).

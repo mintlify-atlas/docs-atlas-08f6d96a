@@ -1,0 +1,141 @@
+---
+title: "Batch Processing Multiple AI Requests in One Call"
+description: "Send up to 10 chat requests in one API call with the batch endpoint. Ideal for bulk evaluation, A/B testing providers, and parallel prompt processing."
+---
+
+The AI Balancer gateway provides a dedicated batch endpoint that lets you submit multiple chat requests in a single HTTP call and receive all results once processing is complete. Requests in a batch are processed in parallel, so the total wall-clock time is closer to the slowest individual request than to the sum of all requests. This makes batch processing well-suited for workloads where you need answers to many independent prompts and want to avoid the overhead of issuing dozens of individual requests.
+
+## Batch endpoint
+
+```
+POST /v1/batch/chat
+```
+
+The batch endpoint accepts up to **10 requests** per call and processes them concurrently. Each item in the batch is an independent chat request and can optionally target a specific provider.
+
+<Note>
+  The maximum batch size is 10 requests per call. Batches larger than this return a `400 Bad Request` error. For larger workloads, split your prompts across multiple batch calls.
+</Note>
+
+## Request format
+
+Send a JSON body with a `requests` array. Each element follows the same schema as the `/v1/chat` endpoint, including an optional `provider` field.
+
+```json
+{
+  "requests": [
+    {
+      "messages": [{"role": "user", "content": "Summarize the theory of relativity in one sentence."}],
+      "provider": "grok"
+    },
+    {
+      "messages": [{"role": "user", "content": "What is the boiling point of water in Fahrenheit?"}],
+      "provider": "cerebras"
+    },
+    {
+      "messages": [{"role": "user", "content": "Write a haiku about distributed systems."}]
+    }
+  ]
+}
+```
+
+When `provider` is omitted for an item, the gateway selects one automatically via Round Robin load balancing.
+
+## Response format
+
+The response contains a `results` array in the same order as the input `requests`, along with aggregate counters for the overall batch.
+
+```json
+{
+  "results": [
+    {
+      "content": "Einstein's theory of relativity states that space and time are interwoven...",
+      "provider": "grok",
+      "response_time_ms": 1204.3,
+      "success": true
+    },
+    {
+      "content": "Water boils at 212°F at standard atmospheric pressure.",
+      "provider": "cerebras",
+      "response_time_ms": 987.1,
+      "success": true
+    },
+    {
+      "content": "Pods spin and crash / Logs scroll in the dark server / Retry saves the day",
+      "provider": "gemini",
+      "response_time_ms": 1543.8,
+      "success": true
+    }
+  ],
+  "total_requests": 3,
+  "successful_requests": 3,
+  "failed_requests": 0,
+  "total_time_ms": 1601.4
+}
+```
+
+If an individual request fails (for example, because its target provider's circuit breaker is open), that item's result will have `"success": false` and an `"error"` field with a description. The rest of the batch is still returned.
+
+## Full curl example
+
+<Steps>
+  <Step title="Prepare your batch payload">
+    Build a JSON body with the `requests` array. You can mix providers across items or omit `provider` to let the gateway choose.
+
+    ```bash
+    curl -X POST http://localhost:8000/v1/batch/chat \
+      -H "X-API-Key: YOUR_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "requests": [
+          {
+            "messages": [{"role": "user", "content": "What is quantum entanglement?"}],
+            "provider": "grok"
+          },
+          {
+            "messages": [{"role": "user", "content": "Name three uses of machine learning in healthcare."}],
+            "provider": "gemini"
+          },
+          {
+            "messages": [
+              {"role": "system", "content": "You are a concise assistant."},
+              {"role": "user", "content": "Explain REST APIs in one paragraph."}
+            ]
+          }
+        ]
+      }'
+    ```
+  </Step>
+  <Step title="Read the response">
+    The gateway returns the full `results` array once all requests complete. Check the `success` field on each result and the top-level `failed_requests` count to detect any partial failures.
+  </Step>
+</Steps>
+
+## Use cases
+
+<CardGroup cols={2}>
+  <Card title="Bulk prompt evaluation" icon="list-check">
+    Run a fixed set of test prompts through the gateway in a single call to evaluate model output quality or regression-test your prompts after configuration changes.
+  </Card>
+  <Card title="A/B testing providers" icon="code-branch">
+    Send the same prompt to multiple providers simultaneously by including it more than once in the batch with different `provider` values, then compare the responses and latencies.
+  </Card>
+  <Card title="Parallel data enrichment" icon="database">
+    Enrich a list of records — for example, generating summaries or classifications for multiple documents — without blocking on sequential API calls.
+  </Card>
+  <Card title="Multi-turn preprocessing" icon="arrows-rotate">
+    Pre-warm a set of independent conversation starters in parallel before presenting them to users, reducing latency at interaction time.
+  </Card>
+</CardGroup>
+
+## Rate limits
+
+<Warning>
+  The batch endpoint is rate-limited to **5 requests per minute** — significantly lower than the 100/minute limit on the standard chat endpoints. This limit applies to the number of batch *calls*, not to the number of individual requests inside each batch. Plan your workload accordingly and add delays between batch calls if you need to process more than 5 batches per minute.
+</Warning>
+
+| Endpoint | Rate limit |
+|---|---|
+| `POST /v1/chat` | 100 / minute |
+| `POST /v2/chat` | 100 / minute |
+| `POST /v1/batch/chat` | 5 / minute |

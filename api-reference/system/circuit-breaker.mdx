@@ -1,0 +1,189 @@
+---
+title: "Circuit breaker status and reset endpoints"
+description: "GET circuit breaker status for all LLM providers and POST to reset an open breaker. Covers all state fields and 404 error when provider name is unknown."
+---
+
+The circuit breaker endpoints let you observe and control the fault-isolation layer that protects the AI Balancer gateway from cascading failures. Each LLM provider has its own adaptive circuit breaker that tracks failure counts, error rates, and high-latency counts. When a provider exceeds configured thresholds, its breaker opens and the gateway stops routing requests to it. These endpoints give you visibility into the current state of every breaker and allow you to force a reset once you have confirmed the underlying provider issue is resolved.
+
+---
+
+## GET /v1/circuit-breaker
+
+Retrieve the current status of all provider circuit breakers in a single response.
+
+### Endpoint
+
+```
+GET /v1/circuit-breaker
+GET /v2/circuit-breaker
+```
+
+### Authentication
+
+Requires a valid API key in the `X-API-Key` header.
+
+```
+X-API-Key: your_api_key_here
+```
+
+### Request
+
+No request body is required.
+
+### Response fields
+
+<ResponseField name="circuits" type="object" required>
+  Map of provider name to circuit breaker status object.
+
+  <Expandable title="circuit breaker status object">
+    <ResponseField name="service" type="string" required>
+      The provider name this circuit breaker is protecting (for example `"grok"`).
+    </ResponseField>
+    <ResponseField name="state" type="string" required>
+      Current circuit state. One of `"closed"`, `"open"`, `"half_open"`, or `"degraded"`.
+
+      | Value | Meaning |
+      |-------|---------|
+      | `closed` | Normal operation — all requests pass through |
+      | `open` | Provider failing — requests are blocked |
+      | `half_open` | Testing recovery — limited probe requests allowed |
+      | `degraded` | Provider is slow but functional — requests pass with warning |
+    </ResponseField>
+    <ResponseField name="failure_count" type="integer" required>
+      Number of consecutive failures recorded since the last successful reset.
+    </ResponseField>
+    <ResponseField name="success_count" type="integer" required>
+      Number of successful requests recorded since the last reset.
+    </ResponseField>
+    <ResponseField name="last_failure_time" type="number" required>
+      Unix timestamp (float) of the most recent failure. `0` if no failure has been recorded yet.
+    </ResponseField>
+    <ResponseField name="half_open_calls" type="integer" required>
+      Number of probe calls that have been allowed through while the circuit is in `half_open` state.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Example request
+
+```bash
+curl -X GET https://your-domain.com/v1/circuit-breaker \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
+### Example response
+
+```json
+{
+  "circuits": {
+    "grok": {
+      "service": "grok",
+      "state": "closed",
+      "failure_count": 0,
+      "success_count": 142,
+      "last_failure_time": 0,
+      "half_open_calls": 0
+    },
+    "cerebras": {
+      "service": "cerebras",
+      "state": "closed",
+      "failure_count": 0,
+      "success_count": 38,
+      "last_failure_time": 0,
+      "half_open_calls": 0
+    },
+    "gemini": {
+      "service": "gemini",
+      "state": "open",
+      "failure_count": 3,
+      "success_count": 0,
+      "last_failure_time": 1714000380.1,
+      "half_open_calls": 0
+    },
+    "openrouter": {
+      "service": "openrouter",
+      "state": "closed",
+      "failure_count": 0,
+      "success_count": 76,
+      "last_failure_time": 0,
+      "half_open_calls": 0
+    }
+  }
+}
+```
+
+---
+
+## POST /v1/circuit-breaker/{provider}/reset
+
+Manually force a provider's circuit breaker back to the `closed` state, immediately restoring normal request routing to that provider.
+
+### Endpoint
+
+```
+POST /v1/circuit-breaker/{provider}/reset
+POST /v2/circuit-breaker/{provider}/reset
+```
+
+### Authentication
+
+Requires a valid API key in the `X-API-Key` header.
+
+### Path parameters
+
+<ResponseField name="provider" type="string" required>
+  The name of the provider whose circuit breaker you want to reset. Must match one of the registered provider names: `grok`, `cerebras`, `gemini`, or `openrouter`.
+</ResponseField>
+
+### Response fields (200 OK)
+
+<ResponseField name="provider" type="string">
+  The provider name that was reset.
+</ResponseField>
+
+<ResponseField name="state" type="string">
+  The state the circuit breaker has been moved to — always `"closed"` after a successful reset.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Human-readable confirmation message, for example `"Circuit breaker reseteado exitosamente"`.
+</ResponseField>
+
+### HTTP status codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | Circuit breaker successfully reset |
+| `401 Unauthorized` | Missing or invalid API key |
+| `404 Not Found` | The specified provider does not exist |
+
+### Example request
+
+```bash
+curl -X POST https://your-domain.com/v1/circuit-breaker/gemini/reset \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
+### Example responses
+
+**200 OK**
+
+```json
+{
+  "provider": "gemini",
+  "state": "closed",
+  "message": "Circuit breaker reseteado exitosamente"
+}
+```
+
+**404 Not Found**
+
+```json
+{
+  "detail": "No se encontró Circuit Breaker para 'unknown_provider'"
+}
+```
+
+<Note>
+  Manually resetting a circuit breaker immediately allows the gateway to route requests to that provider again. Only perform a reset after you have verified that the underlying provider issue has been resolved. If the provider is still failing, the breaker will re-open once the failure threshold is reached again.
+</Note>

@@ -1,0 +1,165 @@
+---
+title: "POST /v2/chat — advanced streaming chat with options"
+description: "POST /v2/chat — send a prompt with system_prompt and options to the gateway and receive a real-time SSE stream of token chunks from an LLM provider."
+---
+
+The `/v2/chat` endpoint is the second-generation streaming chat interface. Instead of a messages array, it accepts a single `prompt` string alongside an optional `system_prompt` and a rich `options` object that controls generation parameters such as temperature, max tokens, and response format. Like the v1 endpoint, responses are delivered as a Server-Sent Events stream. Each SSE event includes the token chunk plus the options that were applied, so your client always knows the exact configuration that produced the output.
+
+## Request
+
+**`POST /v2/chat`**
+
+| Header | Required | Value |
+|---|---|---|
+| `X-API-Key` | Yes | Your API key |
+| `Content-Type` | Yes | `application/json` |
+
+**Rate limit:** 100 requests per minute per API key.
+
+### Request body
+
+<ParamField body="prompt" type="string" required>
+  The user message to send to the model. Must be between 1 and 10,000 characters. Whitespace-only strings are rejected.
+</ParamField>
+
+<ParamField body="system_prompt" type="string">
+  Custom instructions that guide the model's behavior for this request. Maximum 5,000 characters. Use this to set the tone, persona, output format, or constraints for the response.
+</ParamField>
+
+<ParamField body="model" type="string">
+  A specific model identifier to request from the provider (e.g., `"grok-2"`, `"gemini-2.0-flash"`). Maximum 50 characters. When omitted, the provider uses its default model.
+</ParamField>
+
+<ParamField body="provider" type="string">
+  Pin the request to a specific LLM provider. Accepted values: `grok`, `cerebras`, `gemini`, `openrouter`. When omitted, the gateway uses round-robin load balancing across all healthy providers.
+</ParamField>
+
+<ParamField body="options" type="object">
+  Advanced generation parameters. All fields have sensible defaults so this object is fully optional.
+
+  <Expandable title="options properties">
+    <ParamField body="options.temperature" type="number" default="0.7">
+      Controls output randomness. Range 0–2. Lower values produce more deterministic output; higher values produce more creative or varied responses.
+    </ParamField>
+
+    <ParamField body="options.max_tokens" type="integer" default="4096">
+      Maximum number of tokens to generate in the response. Range 1–32,000.
+    </ParamField>
+
+    <ParamField body="options.top_p" type="number" default="1.0">
+      Nucleus sampling threshold. Range 0–1. Only tokens comprising the top `top_p` probability mass are considered at each generation step. Values below 1.0 can sharpen or focus the output distribution.
+    </ParamField>
+
+    <ParamField body="options.response_format" type="string" default="text">
+      Desired output format. Accepted values: `"text"` or `"json"`. Use `"json"` when you need the model to return a machine-readable JSON object.
+    </ParamField>
+
+    <ParamField body="options.seed" type="integer">
+      Integer seed for deterministic generation. When set, the same prompt and seed should produce the same output across repeated calls (subject to provider support).
+    </ParamField>
+
+    <ParamField body="options.stop" type="string[]">
+      List of stop sequences. The model stops generating as soon as any sequence in this list is produced. Defaults to an empty list (no stop sequences).
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## Response
+
+**`Content-Type: text/event-stream`**
+
+The response is a stream of SSE events. Each event is a JSON object on a `data:` line, followed by a blank line. The stream terminates with `data: [DONE]`.
+
+<ResponseField name="content" type="string">
+  A single token chunk from the model output. Concatenate all `content` values in order to reconstruct the full response.
+</ResponseField>
+
+<ResponseField name="provider" type="string">
+  The name of the provider that handled this request (e.g., `"grok"`, `"cerebras"`).
+</ResponseField>
+
+<ResponseField name="model" type="string">
+  The model identifier used by the provider (e.g., `"grok-2"`, `"gemini-2.0-flash"`).
+</ResponseField>
+
+<ResponseField name="options" type="object">
+  The resolved generation options that were applied to this request. Echoed back in each SSE chunk so clients can verify the exact configuration.
+</ResponseField>
+
+## Example
+
+<RequestExample>
+
+```bash cURL
+curl -X POST https://your-domain.com/v2/chat \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Explain quantum computing to a 5-year-old",
+    "system_prompt": "Respond in a fun, simple way using everyday analogies",
+    "options": {
+      "temperature": 0.8,
+      "max_tokens": 500,
+      "top_p": 0.9
+    }
+  }'
+```
+
+</RequestExample>
+
+<ResponseExample>
+
+```text Streaming response
+data: {"content": "Imagine", "provider": "grok", "model": "grok-2", "options": {"temperature": 0.8, "max_tokens": 500, "top_p": 0.9, "response_format": "text", "seed": null, "stop": []}}
+
+data: {"content": " you have", "provider": "grok", "model": "grok-2", "options": {"temperature": 0.8, "max_tokens": 500, "top_p": 0.9, "response_format": "text", "seed": null, "stop": []}}
+
+data: {"content": " a magic coin", "provider": "grok", "model": "grok-2", "options": {"temperature": 0.8, "max_tokens": 500, "top_p": 0.9, "response_format": "text", "seed": null, "stop": []}}
+
+data: [DONE]
+```
+
+</ResponseExample>
+
+## Error responses
+
+| Status | Description |
+|---|---|
+| `401 Unauthorized` | Missing or invalid `X-API-Key` header. |
+| `422 Unprocessable Entity` | Request body failed validation — for example, `prompt` is empty or exceeds 10,000 characters, `options.temperature` is outside 0–2, or `options.response_format` is not `"text"` or `"json"`. |
+| `429 Too Many Requests` | Rate limit of 100 requests/minute exceeded for this API key. |
+| `503 Service Unavailable` | All configured LLM providers are unreachable or have open circuit breakers. |
+
+```json 401
+{
+  "detail": "Invalid or missing API key"
+}
+```
+
+```json 422
+{
+  "detail": [
+    {
+      "loc": ["body", "options", "temperature"],
+      "msg": "ensure this value is less than or equal to 2",
+      "type": "value_error.number.not_le"
+    }
+  ]
+}
+```
+
+```json 429
+{
+  "detail": "Rate limit exceeded",
+  "limit": "100/minute",
+  "remaining": 0,
+  "reset": "2026-04-29T10:31:00Z"
+}
+```
+
+```json 503
+{
+  "detail": "No providers available",
+  "reason": "All circuit breakers are open"
+}
+```

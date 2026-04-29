@@ -1,0 +1,106 @@
+---
+title: "Round Robin Load Balancing Across LLM Providers"
+description: "Learn how AI Balancer distributes requests across Grok, Cerebras, Gemini, and OpenRouter using Round Robin with automatic circuit breaker-aware failover."
+---
+
+AI Balancer uses a Round Robin algorithm to distribute chat requests evenly across all registered LLM providers. Rather than sending every request to a single provider, the gateway cycles through the available pool in sequence — provider 1, provider 2, provider 3, back to provider 1 — ensuring no single backend receives a disproportionate share of traffic. This distribution happens automatically on every request unless the caller explicitly pins a provider, and it adapts in real time as providers are removed from or restored to the eligible pool by the circuit breaker.
+
+## How Round Robin Works
+
+The `ServiceRegistry` in `app/registry.py` maintains two data structures that drive the algorithm:
+
+- `_provider_order` — the ordered list of provider names as they were registered at startup
+- `_round_robin_index` — an integer counter that advances by one on every selection
+
+On each call to `get_next_round_robin()`, the registry first filters `_provider_order` down to only the providers whose circuit breakers allow execution, then picks the entry at position `_round_robin_index % len(filtered_order)` and increments the index:
+
+```python
+def get_next_round_robin(self) -> AIService | None:
+    """Get next service using Round Robin."""
+    available = self.get_available_providers()
+
+    # Keep only providers that are eligible (circuit not OPEN)
+    available_set = set(available)
+    filtered_order = [
+        p for p in self._provider_order
+        if p in available_set
+    ]
+
+    if not filtered_order:
+        return None
+
+    # Select the next provider and advance the index
+    service_name = filtered_order[self._round_robin_index % len(filtered_order)]
+    self._round_robin_index = (self._round_robin_index + 1) % len(filtered_order)
+
+    return self._services.get(service_name)
+```
+
+The modulo operation keeps the index within bounds even as the pool shrinks, so the sequence remains correct without resetting the counter.
+
+## Provider Eligibility and Circuit Breaker State
+
+Not every registered provider is eligible for Round Robin at all times. `get_available_providers()` iterates over all circuit breakers and calls `_can_execute()` on each one. Only providers in the `CLOSED` or `DEGRADED` state pass this check:
+
+| Circuit State | Eligible for Round Robin | Notes |
+|---|---|---|
+| `CLOSED` | Yes | Normal operation |
+| `DEGRADED` | Yes | High latency detected, but requests still pass |
+| `HALF_OPEN` | Yes | Limited test calls allowed during recovery |
+| `OPEN` | No | Provider is failing; skipped entirely |
+
+When a provider transitions to `OPEN`, it is automatically excluded from the pool until recovery. The index continues advancing across the remaining providers, so the gap is invisible to callers. Once the circuit closes again, the provider re-enters the pool at its original position in `_provider_order`.
+
+<Warning>
+If all provider circuit breakers are simultaneously in the `OPEN` state, `get_available_providers()` returns an empty list. The gateway cannot select any provider and returns **HTTP 503 Service Unavailable**. Configure your circuit breaker thresholds and recovery timeouts to minimize the window where this can occur.
+</Warning>
+
+## Provider Selection Logic
+
+Every chat endpoint follows this decision tree before dispatching to a provider:
+
+```python
+async def chat(request_data: ChatRequest, ...):
+    # 1. Use a pinned provider if the caller specified one
+    if request_data.provider:
+        service = registry.get_service(request_data.provider)
+        if not service:
+            raise HTTPException(404, "Provider not found")
+    else:
+        # 2. Fall back to Round Robin
+        service = registry.get_next_round_robin()
+        if not service:
+            raise HTTPException(503, "No providers available")
+
+    # 3. Verify the circuit breaker before calling the provider
+    breaker = registry.get_circuit_breaker(service.service_name)
+    if breaker and not breaker._can_execute():
+        raise HTTPException(503, f"Circuit breaker open for {service.service_name}")
+
+    # 4. Call the provider and record the outcome
+    try:
+        async for chunk in service.generate_stream(messages):
+            yield chunk
+        registry.record_success(service.service_name)
+    except Exception:
+        registry.record_failure(service.service_name)
+        raise
+```
+
+<Note>
+Set the `provider` field in your request body to pin a specific provider and bypass Round Robin entirely. Accepted values are `"grok"`, `"cerebras"`, `"gemini"`, and `"openrouter"`. Note that the circuit breaker for the pinned provider is still checked — if it is `OPEN`, the request returns 503 immediately.
+</Note>
+
+## Benefits
+
+**Even distribution** — Every provider handles roughly the same request volume over time, preventing any single backend from becoming a bottleneck while others sit idle.
+
+**Automatic failover** — When a provider starts failing and its circuit opens, the Round Robin pool contracts automatically. Traffic redistributes across the remaining healthy providers without any configuration change.
+
+**No single point of overload** — Because selection is deterministic and sequential, a burst of requests does not pile onto the first provider in the list. The load spreads uniformly.
+
+**Provider recovery is seamless** — Once a circuit transitions back to `CLOSED` after successful recovery, the provider re-enters the pool and immediately starts receiving its share of traffic again.
+
+<Tip>
+Monitor how traffic is actually distributed across providers using the Prometheus metrics exposed at `GET /metrics`. The `requests_total` counter is labeled by `provider` and `endpoint`, so you can build dashboards that show per-provider request volume over time and detect skew caused by frequent circuit opens on one provider.
+</Tip>

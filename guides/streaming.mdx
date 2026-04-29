@@ -1,0 +1,123 @@
+---
+title: "Real-Time Streaming Responses with SSE in the Gateway"
+description: "Consume Server-Sent Events streaming responses from AI Balancer with curl and Python examples. Learn when to use streaming vs the non-streaming endpoints."
+---
+
+The AI Balancer gateway delivers model responses as a live stream of tokens using Server-Sent Events (SSE). Rather than waiting for the entire response to be generated before sending anything back, the gateway forwards each token chunk to your client the instant it arrives from the upstream provider. This dramatically reduces perceived latency for long responses and lets you build reactive interfaces that display text progressively as it is produced.
+
+## How streaming works
+
+When you call a streaming endpoint, the gateway opens a persistent HTTP connection to the selected provider, reads the provider's token stream, and re-emits each chunk to your client in the SSE format. The connection stays open until the provider signals completion with a `[DONE]` sentinel, at which point the gateway closes the stream. Round Robin load balancing and circuit breaker checks happen before the stream begins, so by the time your client starts receiving tokens, the provider has already been selected and validated.
+
+## Streaming endpoints
+
+Both API versions support streaming:
+
+| Endpoint | API Version | Request format |
+|---|---|---|
+| `POST /v1/chat` | v1 | `messages` array (OpenAI-compatible) |
+| `POST /v2/chat` | v2 | `prompt` string with optional advanced options |
+
+## Response format
+
+Streaming responses are sent with `Content-Type: text/event-stream`. Each chunk is a line prefixed with `data:` followed by a JSON object, and the stream is terminated by the `data: [DONE]` sentinel.
+
+```text
+data: {"content": "Sure", "provider": "grok", "model": "grok-2"}
+
+data: {"content": ", here", "provider": "grok", "model": "grok-2"}
+
+data: {"content": "'s a joke", "provider": "grok", "model": "grok-2"}
+
+data: [DONE]
+```
+
+Each chunk includes:
+- `content` — the token or token fragment emitted by the model
+- `provider` — the upstream provider that handled the request
+- `model` — the model identifier in use
+
+## Examples
+
+<Tabs>
+  <Tab title="curl">
+    Use the `-N` flag to disable curl's output buffering so you see tokens as they arrive rather than receiving the entire response at once.
+
+    ```bash
+    curl -N -X POST http://localhost:8000/v1/chat \
+      -H "X-API-Key: YOUR_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{"messages": [{"role": "user", "content": "Tell me a joke"}]}'
+    ```
+  </Tab>
+  <Tab title="Python">
+    Use the `requests` library with `stream=True` and iterate over the response lines to process each SSE chunk as it arrives.
+
+    ```python
+    import json
+    import requests
+
+    url = "http://localhost:8000/v1/chat"
+    headers = {
+        "X-API-Key": "YOUR_API_KEY",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messages": [{"role": "user", "content": "Tell me a joke"}]
+    }
+
+    with requests.post(url, headers=headers, json=payload, stream=True) as response:
+        response.raise_for_status()
+        for line in response.iter_lines():
+            if not line:
+                continue
+            # Lines arrive as bytes; decode and strip the "data: " prefix
+            text = line.decode("utf-8")
+            if not text.startswith("data: "):
+                continue
+            payload_str = text[len("data: "):]
+            if payload_str == "[DONE]":
+                break
+            chunk = json.loads(payload_str)
+            print(chunk["content"], end="", flush=True)
+    print()  # newline after response completes
+    ```
+  </Tab>
+</Tabs>
+
+## Non-streaming endpoints
+
+If you do not need progressive rendering and prefer a single JSON response once the model finishes, use the dedicated no-stream endpoints:
+
+| Endpoint | Description |
+|---|---|
+| `POST /v1/chat/no-stream` | Returns a complete JSON response (v1) |
+| `POST /v2/chat/no-stream` | Returns a complete JSON response (v2) |
+
+The no-stream response body looks like:
+
+```json
+{
+  "content": "Why don't scientists trust atoms? Because they make up everything!",
+  "provider": {
+    "service": "grok",
+    "model": "grok-2"
+  },
+  "response_time_ms": 1423.7
+}
+```
+
+## When to use streaming vs non-streaming
+
+<CardGroup cols={2}>
+  <Card title="Use streaming when" icon="bolt">
+    You are building a chat UI or terminal application and want to show text as it is generated. Streaming lowers time-to-first-token and keeps users engaged during longer responses.
+  </Card>
+  <Card title="Use non-streaming when" icon="check">
+    You are processing responses programmatically — for example, parsing JSON output, running evaluations, or storing results in a database — and do not need the incremental tokens.
+  </Card>
+</CardGroup>
+
+<Tip>
+  If SSE handling adds complexity to your integration, the `/v1/chat/no-stream` and `/v2/chat/no-stream` endpoints return a plain JSON object and require no special stream-parsing logic. They are the easiest way to get started.
+</Tip>
